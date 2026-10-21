@@ -4,6 +4,7 @@
 #
 # Le moteur IA (Ollama, LM Studio…) n'est PAS inclus : l'application réutilise celui qui tourne déjà
 # sur la machine hôte ou sur une autre machine du réseau (voir AI_BASE_URL et le README).
+# Le moteur de recherche SearXNG (recherche Web du chat) est inclus, sans port publié.
 
 name: iatrano
 
@@ -23,6 +24,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # Moteur de recherche auto-hébergé utilisé par la recherche Web (API JSON, réseau interne uniquement).
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Définissez SEARXNG_SECRET dans .env (openssl rand -hex 32)}
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    # Aucun port publié : seul le service app l'interroge (http://searxng:8080).
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
 
   migrate:
     build:
@@ -49,6 +72,9 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      # Démarrage seulement : si SearXNG tombe, le chat continue et signale la recherche indisponible.
+      searxng:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-iatrano}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-iatrano}
       AUTH_SECRET: ${AUTH_SECRET:?Définissez AUTH_SECRET dans .env (openssl rand -base64 48)}
@@ -62,6 +88,10 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       RATE_LIMIT_GENERATIONS_PER_MINUTE: ${RATE_LIMIT_GENERATIONS_PER_MINUTE:-20}
+      # Recherche Web (modifiable ensuite dans Administration → Recherche Web)
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-searxng}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
     # Permet au conteneur de joindre un moteur IA installé sur la machine hôte (Linux compris).
     extra_hosts:
       - "host.docker.internal:host-gateway"

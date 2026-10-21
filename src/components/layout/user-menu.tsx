@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { ChevronsUpDown, LogOut, Monitor, Moon, Settings, ShieldCheck, Sun } from "lucide-react";
+import { Brain, ChevronsUpDown, LogOut, Monitor, Moon, Settings, ShieldCheck, Sun } from "lucide-react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -70,6 +70,11 @@ export function UserMenu() {
         <DropdownMenuItem asChild>
           <Link href="/settings">
             <Settings /> Paramètres
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/settings/memory">
+            <Brain /> Mémoire
           </Link>
         </DropdownMenuItem>
         {user.isAdmin && (

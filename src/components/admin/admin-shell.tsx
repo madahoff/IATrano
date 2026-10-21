@@ -1,12 +1,14 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Activity, Bot, ScrollText, Users } from "lucide-react";
+import { Activity, Bot, Gauge, Globe, ScrollText, Users } from "lucide-react";
 import { NavLinks, PageShell } from "@/components/layout/page-shell";
 
 const ITEMS = [
   { href: "/admin", label: "État", icon: <Activity /> },
   { href: "/admin/ai", label: "Serveur IA", icon: <Bot /> },
+  { href: "/admin/search", label: "Recherche Web", icon: <Globe /> },
+  { href: "/admin/context", label: "Contexte et mémoire", icon: <Gauge /> },
   { href: "/admin/users", label: "Utilisateurs", icon: <Users /> },
   { href: "/admin/logs", label: "Journal", icon: <ScrollText /> },
 ];

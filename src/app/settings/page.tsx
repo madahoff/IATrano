@@ -21,12 +21,15 @@ export default async function SettingsPage() {
           defaultModel: settings?.defaultModel ?? null,
           thinkingDefault: settings?.thinkingDefault ?? null,
           clarificationsEnabled: settings?.clarificationsEnabled ?? null,
+          webSearchDefault: settings?.webSearchDefault ?? null,
         }}
         app={{
           providerLabel: PROVIDER_LABELS[app.providerType],
           defaultModel: app.defaultModel,
           thinkingDefault: app.thinkingDefault,
           clarificationsEnabled: app.clarificationsEnabled,
+          webSearchAutoDefault: app.webSearchAutoDefault,
+          webSearchEnabled: app.webSearchEnabled,
         }}
       />
     </PageShell>

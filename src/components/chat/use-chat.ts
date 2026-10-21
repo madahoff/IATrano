@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { readApiError } from "@/lib/client/api";
-import { createEventDecoder, type ChatRequestBody, type MessageDTO, type StreamEvent } from "@/lib/chat/protocol";
+import { createEventDecoder, type ChatRequestBody, type ContextStreamEvent, type MessageDTO, type StreamEvent } from "@/lib/chat/protocol";
+import type { ResearchDTO } from "@/lib/search/research-types";
 
 export type Notice = { code: string; message: string };
 export type UIMessage = MessageDTO & { notices: Notice[]; hint?: string };
@@ -25,6 +26,17 @@ function emptyAssistant(model: string, thinking: boolean): UIMessage {
     durationMs: null,
     createdAt: new Date().toISOString(),
     notices: [],
+    research: null,
+  };
+}
+
+/** Recherche interrompue côté client : plus aucune étape « en cours » affichée. */
+function closeResearch(r: ResearchDTO | null, status: ResearchDTO["status"], detail: string): ResearchDTO | null {
+  if (!r) return r;
+  return {
+    ...r,
+    status: r.status === "running" ? status : r.status,
+    steps: r.steps.map((s) => (s.status === "running" || s.status === "pending" ? { ...s, status: "failed", detail } : s)),
   };
 }
 
@@ -32,6 +44,10 @@ type Callbacks = {
   onConversationCreated?: (id: string, title: string) => void;
   onTitle?: (id: string, title: string) => void;
   onActivity?: (id: string) => void;
+  /** Contexte, compaction automatique et mémoire (compteur de contexte). */
+  onContextEvent?: (event: ContextStreamEvent) => void;
+  /** Fin du flux, post-traitements compris (titre, mémoire, compaction). */
+  onStreamEnd?: () => void;
 };
 
 export function useChat(initial: { conversationId: string | null; messages: MessageDTO[] }, callbacks: Callbacks) {
@@ -66,6 +82,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
 
       const patchAssistant = (fn: (m: UIMessage) => UIMessage) =>
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)));
+      const patchResearch = (fn: (r: ResearchDTO) => ResearchDTO) => patchAssistant((m) => (m.research ? { ...m, research: fn(m.research) } : m));
 
       // Regroupe les fragments reçus et les applique une fois par frame (fluidité sur les longues réponses).
       let pendingText = "";
@@ -154,6 +171,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
                 status: m.status === "ERROR" ? "ERROR" : ev.status,
                 durationMs: ev.durationMs,
                 content: m.content.trim(),
+                research: ev.status === "CANCELLED" ? closeResearch(m.research, "cancelled", "Annulé") : m.research,
               }));
               if (convRef.current) cbRef.current.onActivity?.(convRef.current);
               // Libère la saisie sans attendre l'éventuel titre automatique qui suit.
@@ -163,12 +181,43 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
             case "error":
               flush();
               finished = true;
-              patchAssistant((m) => ({ ...m, status: "ERROR", error: ev.message, hint: ev.hint }));
+              patchAssistant((m) => ({ ...m, status: "ERROR", error: ev.message, hint: ev.hint, research: closeResearch(m.research, "failed", "Interrompu") }));
               abortRef.current = null;
               setIsStreaming(false);
               break;
             case "title":
               cbRef.current.onTitle?.(ev.conversationId, ev.title);
+              break;
+            case "context":
+            case "context_measured":
+            case "compaction":
+            case "memory":
+              cbRef.current.onContextEvent?.(ev);
+              break;
+            // --- Recherche Web : l'interface reflète uniquement les étapes émises par le serveur.
+            case "research_start":
+              patchAssistant((m) => ({
+                ...m,
+                research: { mode: ev.mode, status: "running", queries: [], steps: [], sources: [], cited: null, limitations: [], error: null, durationMs: null },
+              }));
+              break;
+            case "research_step":
+              patchResearch((r) => {
+                const i = r.steps.findIndex((s) => s.id === ev.step.id);
+                const steps = i >= 0 ? r.steps.map((s, j) => (j === i ? ev.step : s)) : [...r.steps, ev.step];
+                return { ...r, steps };
+              });
+              break;
+            case "research_sources":
+              patchResearch((r) => ({ ...r, sources: ev.sources }));
+              break;
+            case "research_end":
+              patchResearch((r) => ({ ...r, status: ev.status, queries: ev.queries, limitations: ev.limitations, error: ev.error }));
+              break;
+            case "citations":
+              flush();
+              // Texte validé par le serveur (références invalides retirées) : il remplace le texte reçu en streaming.
+              patchAssistant((m) => ({ ...m, content: ev.content, research: m.research ? { ...m.research, cited: ev.cited } : m.research }));
               break;
           }
         };
@@ -179,14 +228,14 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
         }
         flush();
         if (!finished) {
-          patchAssistant((m) => ({ ...m, status: "ERROR", error: "La réponse s'est terminée de façon inattendue." }));
+          patchAssistant((m) => ({ ...m, status: "ERROR", error: "La réponse s'est terminée de façon inattendue.", research: closeResearch(m.research, "failed", "Interrompu") }));
         }
         return true;
       } catch {
         flush();
         if (ctrl.signal.aborted) {
           if (!started) setMessages(snapshot);
-          else patchAssistant((m) => (m.status === "STREAMING" ? { ...m, status: "CANCELLED" } : m));
+          else patchAssistant((m) => (m.status === "STREAMING" ? { ...m, status: "CANCELLED", research: closeResearch(m.research, "cancelled", "Annulé") } : m));
         } else if (!finished) {
           if (!started) {
             setMessages(snapshot);
@@ -197,6 +246,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
               ...m,
               status: "ERROR",
               error: "Connexion interrompue pendant la génération. La partie reçue a été conservée.",
+              research: closeResearch(m.research, "failed", "Connexion interrompue"),
             }));
           }
         }
@@ -205,14 +255,15 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
         if (frame !== null) cancelAnimationFrame(frame);
         if (abortRef.current === ctrl) abortRef.current = null;
         if (!abortRef.current) setIsStreaming(false);
+        cbRef.current.onStreamEnd?.();
       }
     },
     [],
   );
 
   const send = useCallback(
-    (content: string, model: string, thinking: boolean) =>
-      run({ action: "send", conversationId: convRef.current ?? undefined, content, model, thinking }, (prev) => [
+    (content: string, model: string, thinking: boolean, webSearch: boolean) =>
+      run({ action: "send", conversationId: convRef.current ?? undefined, content, model, thinking, webSearch }, (prev) => [
         ...prev,
         {
           id: tempId("u"),
@@ -227,6 +278,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
           durationMs: null,
           createdAt: new Date().toISOString(),
           notices: [],
+          research: null,
         },
         emptyAssistant(model, thinking),
       ]),
@@ -234,8 +286,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const regenerate = useCallback(
-    (assistantMessageId: string | undefined, model: string, thinking: boolean) =>
-      run({ action: "regenerate", conversationId: convRef.current ?? undefined, messageId: assistantMessageId, model, thinking }, (prev) => {
+    (assistantMessageId: string | undefined, model: string, thinking: boolean, webSearch: boolean) =>
+      run({ action: "regenerate", conversationId: convRef.current ?? undefined, messageId: assistantMessageId, model, thinking, webSearch }, (prev) => {
         const idx = assistantMessageId ? prev.findIndex((m) => m.id === assistantMessageId) : prev.findLastIndex((m) => m.role === "ASSISTANT");
         const kept = idx >= 0 ? prev.slice(0, idx) : prev;
         return [...kept, emptyAssistant(model, thinking)];
@@ -244,8 +296,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const edit = useCallback(
-    (userMessageId: string, content: string, model: string, thinking: boolean) =>
-      run({ action: "edit", conversationId: convRef.current ?? undefined, messageId: userMessageId, content, model, thinking }, (prev) => {
+    (userMessageId: string, content: string, model: string, thinking: boolean, webSearch: boolean) =>
+      run({ action: "edit", conversationId: convRef.current ?? undefined, messageId: userMessageId, content, model, thinking, webSearch }, (prev) => {
         const idx = prev.findIndex((m) => m.id === userMessageId);
         const kept = prev.slice(0, idx + 1).map((m) => (m.id === userMessageId ? { ...m, content } : m));
         return [...kept, emptyAssistant(model, thinking)];

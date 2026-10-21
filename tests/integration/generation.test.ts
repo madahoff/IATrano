@@ -154,7 +154,7 @@ describe("Génération en streaming", () => {
       await new Promise<void>((resolve) => req.signal?.addEventListener("abort", () => resolve(), { once: true }));
       throw new ProviderError("Génération annulée.", "aborted");
     };
-    const { events } = await chat({ action: "send", content: "Raconte une longue histoire", model: "plain:3b", thinking: false }, { abortAfterEvents: 2 });
+    const { events } = await chat({ action: "send", content: "Raconte une longue histoire", model: "plain:3b", thinking: false }, { abortAfterEvents: 3 }); // start, context, text
     const start = events[0] as Extract<StreamEvent, { type: "start" }>;
     await vi.waitFor(async () => {
       const msg = await db.message.findUniqueOrThrow({ where: { id: start.assistantMessageId } });

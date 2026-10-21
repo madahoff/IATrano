@@ -7,6 +7,7 @@ const schema = z.object({
   defaultModel: z.string().min(1).max(200).nullable().optional(),
   thinkingDefault: z.boolean().nullable().optional(),
   clarificationsEnabled: z.boolean().nullable().optional(),
+  webSearchDefault: z.boolean().nullable().optional(),
   theme: z.enum(["SYSTEM", "LIGHT", "DARK"]).optional(),
 });
 

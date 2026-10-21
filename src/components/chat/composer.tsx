@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { ArrowUp, Brain, Square } from "lucide-react";
+import { ArrowUp, Brain, Globe, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Capability } from "@/lib/llm/types";
@@ -21,9 +21,15 @@ export const Composer = forwardRef<
     thinking: boolean;
     thinkingCapability: Capability | null;
     onThinkingChange: (v: boolean) => void;
+    webSearch: boolean;
+    webSearchState: "loading" | "disabled" | "unconfigured" | "ready";
+    onWebSearchChange: (v: boolean) => void;
     placeholder?: string;
   }
->(function Composer({ onSubmit, onStop, isStreaming, blockedReason, thinking, thinkingCapability, onThinkingChange, placeholder }, ref) {
+>(function Composer(
+  { onSubmit, onStop, isStreaming, blockedReason, thinking, thinkingCapability, onThinkingChange, webSearch, webSearchState, onWebSearchChange, placeholder },
+  ref,
+) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [coarse, setCoarse] = useState(false);
@@ -64,6 +70,16 @@ export const Composer = forwardRef<
           ? "Thinking activé : le modèle réfléchit avant de répondre"
           : "Activer le Thinking";
 
+  const webDisabled = webSearchState !== "ready";
+  const webTip =
+    webSearchState === "disabled"
+      ? "La recherche Web est désactivée par l'administration"
+      : webSearchState === "unconfigured"
+        ? "Aucun moteur de recherche n'est configuré (Administration → Recherche Web)"
+        : webSearch
+          ? "Recherche Web automatique : l'IA cherche sur Internet quand la question le nécessite (actualités, prix, versions…) ou si vous le demandez"
+          : "Recherche Web désactivée pour cette conversation : aucune recherche, même sur demande. Cliquez pour l'activer";
+
   return (
     <div className="w-full">
       {blockedReason && <p className="mb-2 px-4 text-center text-xs text-warning-foreground">{blockedReason}</p>}
@@ -90,7 +106,7 @@ export const Composer = forwardRef<
           aria-label="Message"
           className="block max-h-[240px] min-h-11 w-full resize-none bg-transparent px-3 py-2.5 text-base leading-6 outline-none placeholder:text-muted-foreground md:text-[0.95rem]"
         />
-        <div className="flex items-center justify-between gap-2 pt-1">
+        <div className="flex items-center gap-1 pt-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <span tabIndex={thinkingDisabled ? 0 : -1} className="rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
@@ -113,6 +129,29 @@ export const Composer = forwardRef<
             </TooltipTrigger>
             <TooltipContent className="max-w-64">{thinkingTip}</TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={webDisabled ? 0 : -1} className="rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={webDisabled}
+                  aria-pressed={webSearch && !webDisabled}
+                  onClick={() => onWebSearchChange(!webSearch)}
+                  className={cn(
+                    "h-9 gap-1.5 px-3 text-muted-foreground hover:bg-accent",
+                    webSearch && !webDisabled && "bg-primary text-primary-foreground hover:bg-primary/85 hover:text-primary-foreground",
+                  )}
+                >
+                  <Globe />
+                  <span className="hidden sm:inline">Recherche</span>
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-64">{webTip}</TooltipContent>
+          </Tooltip>
+          <div className="flex-1" />
 
           {isStreaming ? (
             <Button type="button" size="icon" onClick={onStop} aria-label="Arrêter la génération" className="size-9">

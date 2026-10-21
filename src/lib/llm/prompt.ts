@@ -23,26 +23,21 @@ export type HistoryMessage = {
 
 const MAX_HISTORY_MESSAGES = 40;
 
-export function buildMessages(opts: {
-  systemPrompt?: string | null;
-  clarifications: boolean;
-  history: HistoryMessage[];
-  /** Budget approximatif en caractères pour l'historique (≈ 3,5 caractères par token). */
-  charBudget?: number;
-  now?: Date;
-}): ChatMessage[] {
+export function buildSystemPrompt(opts: { systemPrompt?: string | null; clarifications: boolean; now?: Date }): string {
   const now = opts.now ?? new Date();
-  const system = [
+  return [
     opts.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT,
     `Date du jour : ${now.toISOString().slice(0, 10)}.`,
     opts.clarifications ? CLARIFICATION_INSTRUCTIONS : "",
   ]
     .filter(Boolean)
     .join("\n\n");
+}
 
-  const turns: ChatMessage[] = opts.history
+/** Convertit l'historique enregistré en tours de conversation (les messages vides sont ignorés). */
+export function toChatTurns(history: HistoryMessage[]): ChatMessage[] {
+  return history
     .filter((m) => m.content.trim() || m.clarification)
-    .slice(-MAX_HISTORY_MESSAGES)
     .map((m) => {
       if (m.role === "USER") return { role: "user", content: m.content };
       let content = m.content;
@@ -52,6 +47,18 @@ export function buildMessages(opts: {
       }
       return { role: "assistant", content };
     });
+}
+
+export function buildMessages(opts: {
+  systemPrompt?: string | null;
+  clarifications: boolean;
+  history: HistoryMessage[];
+  /** Budget approximatif en caractères pour l'historique (≈ 3,5 caractères par token). */
+  charBudget?: number;
+  now?: Date;
+}): ChatMessage[] {
+  const system = buildSystemPrompt(opts);
+  const turns = toChatTurns(opts.history).slice(-MAX_HISTORY_MESSAGES);
 
   // Tronque les plus anciens échanges si l'historique dépasse le budget (le dernier message est toujours gardé).
   const budget = opts.charBudget ?? 24_000;

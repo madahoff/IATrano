@@ -18,6 +18,7 @@ const patchSchema = z
     title: z.string().trim().min(1, "Le titre est vide.").max(120).optional(),
     archived: z.boolean().optional(),
     model: z.string().min(1).max(200).optional(),
+    webSearch: z.boolean().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, "Aucune modification.");
 

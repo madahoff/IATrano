@@ -15,7 +15,17 @@ import {
 // Le raisonnement est lu dans delta.reasoning_content / delta.reasoning (llama.cpp, vLLM, LM Studio),
 // ou extrait des balises <think> si le serveur le laisse dans le contenu.
 
-type ModelsResponse = { data?: Array<{ id: string; owned_by?: string }> };
+// Champs non standard indiquant la fenêtre chargée : vLLM (max_model_len), LM Studio / LocalAI / autres.
+type ModelsResponse = {
+  data?: Array<{ id: string; owned_by?: string; max_model_len?: unknown; context_length?: unknown; context_window?: unknown; loaded_context_length?: unknown }>;
+};
+
+function contextFrom(m: NonNullable<ModelsResponse["data"]>[number]): number | undefined {
+  for (const v of [m.loaded_context_length, m.max_model_len, m.context_length, m.context_window]) {
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  }
+  return undefined;
+}
 
 type SseChunk = {
   choices?: Array<{
@@ -23,7 +33,7 @@ type SseChunk = {
     message?: { content?: string | null };
     finish_reason?: string | null;
   }>;
-  usage?: { completion_tokens?: number };
+  usage?: { completion_tokens?: number; prompt_tokens?: number };
   error?: { message?: string } | string;
 };
 
@@ -91,6 +101,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
         id: m.id,
         name: m.id,
         provider: this.kind,
+        contextLength: contextFrom(m),
         // L'API OpenAI ne décrit pas les capacités : elles restent « inconnues » plutôt que supposées.
         capabilities: { thinking: "unknown", tools: "unknown", vision: "unknown" },
       }));
@@ -102,6 +113,8 @@ export class OpenAICompatibleProvider implements LlmProvider {
     if (req.temperature !== undefined) body.temperature = req.temperature;
     // Interrupteur de raisonnement pour les gabarits Qwen3 / DeepSeek (llama.cpp, vLLM, SGLang).
     if (withExtras && req.think !== undefined) body.chat_template_kwargs = { enable_thinking: req.think };
+    // Demande la consommation réelle (prompt_tokens) dans le dernier fragment du flux.
+    if (withExtras && stream) body.stream_options = { include_usage: true };
     return JSON.stringify(body);
   }
 
@@ -112,9 +125,9 @@ export class OpenAICompatibleProvider implements LlmProvider {
       res = await fetchWithTimeout(this.url("/chat/completions"), { method: "POST", body: this.body(req, stream, true, { type: "json_object" }) }, this.opts(req.signal));
     }
     // Certains serveurs stricts refusent les champs inconnus : nouvel essai sans extension.
-    if ((res.status === 400 || res.status === 422) && req.think !== undefined) {
+    if ((res.status === 400 || res.status === 422) && (req.think !== undefined || stream)) {
       const detail = await readErrorBody(res);
-      if (/chat_template_kwargs|unrecognized|extra/i.test(detail)) {
+      if (/chat_template_kwargs|stream_options|unrecognized|extra/i.test(detail)) {
         res = await fetchWithTimeout(this.url("/chat/completions"), { method: "POST", body: this.body(req, stream, false) }, this.opts(req.signal));
       } else {
         throw new ProviderError(`Erreur du serveur IA (${res.status}) : ${detail}`, "http_error", undefined, res.status);
@@ -135,6 +148,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
     if (!res.body) throw new ProviderError("Réponse vide du serveur IA.", "bad_response");
     const thinkTags = createThinkTagRouter();
     let evalCount: number | undefined;
+    let promptTokens: number | undefined;
     let finish: string | undefined;
     for await (const line of readLines(res.body, { idleTimeoutMs: this.config.timeoutMs, signal: req.signal, baseUrl: this.config.baseUrl })) {
       if (!line.startsWith("data:")) continue;
@@ -158,9 +172,10 @@ export class OpenAICompatibleProvider implements LlmProvider {
       if (content) yield* thinkTags.push(content);
       if (choice?.finish_reason) finish = choice.finish_reason;
       if (data.usage?.completion_tokens) evalCount = data.usage.completion_tokens;
+      if (data.usage?.prompt_tokens) promptTokens = data.usage.prompt_tokens;
     }
     yield* thinkTags.flush();
-    yield { type: "done", reason: finish, evalCount };
+    yield { type: "done", reason: finish, evalCount, promptTokens };
   }
 
   async completeJson(req: GenerateRequest, schema: Record<string, unknown>): Promise<string> {

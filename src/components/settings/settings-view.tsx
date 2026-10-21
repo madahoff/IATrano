@@ -23,8 +23,8 @@ import { useMounted } from "@/hooks/use-mounted";
 type Props = {
   user: { id: string; name: string; email: string; role: Role };
   isAdmin: boolean;
-  preferences: { defaultModel: string | null; thinkingDefault: boolean | null; clarificationsEnabled: boolean | null };
-  app: { providerLabel: string; defaultModel: string | null; thinkingDefault: boolean; clarificationsEnabled: boolean };
+  preferences: { defaultModel: string | null; thinkingDefault: boolean | null; clarificationsEnabled: boolean | null; webSearchDefault: boolean | null };
+  app: { providerLabel: string; defaultModel: string | null; thinkingDefault: boolean; clarificationsEnabled: boolean; webSearchAutoDefault: boolean; webSearchEnabled: boolean };
 };
 
 const errMsg = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
@@ -144,6 +144,7 @@ function AiTab({ preferences, app, isAdmin }: Props) {
   const [defaultModel, setDefaultModel] = useState(preferences.defaultModel ?? "inherit");
   const [thinking, setThinking] = useState<TriState>(toTri(preferences.thinkingDefault));
   const [clarify, setClarify] = useState<TriState>(toTri(preferences.clarificationsEnabled));
+  const [webSearch, setWebSearch] = useState<TriState>(toTri(preferences.webSearchDefault));
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -160,7 +161,7 @@ function AiTab({ preferences, app, isAdmin }: Props) {
     try {
       await api("/api/me/settings", {
         method: "PATCH",
-        json: { defaultModel: defaultModel === "inherit" ? null : defaultModel, thinkingDefault: fromTri(thinking), clarificationsEnabled: fromTri(clarify) },
+        json: { defaultModel: defaultModel === "inherit" ? null : defaultModel, thinkingDefault: fromTri(thinking), clarificationsEnabled: fromTri(clarify), webSearchDefault: fromTri(webSearch) },
       });
       toast.success("Préférences enregistrées.");
     } catch (err) {
@@ -207,6 +208,19 @@ function AiTab({ preferences, app, isAdmin }: Props) {
                 <SelectItem value="inherit">Défaut de l&apos;application ({onOff(app.clarificationsEnabled)})</SelectItem>
                 <SelectItem value="on">Activées</SelectItem>
                 <SelectItem value="off">Désactivées</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field
+            label="Recherche Web automatique"
+            hint={app.webSearchEnabled ? "État initial du bouton « Recherche » dans vos nouvelles conversations. Activée, l'IA cherche sur Internet seulement quand la question le nécessite." : "La recherche Web est actuellement désactivée par l'administration."}
+          >
+            <Select value={webSearch} onValueChange={(v) => setWebSearch(v as TriState)} disabled={!app.webSearchEnabled}>
+              <SelectTrigger className="w-full sm:w-96"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">Défaut de l&apos;application ({onOff(app.webSearchAutoDefault)})</SelectItem>
+                <SelectItem value="on">Activée</SelectItem>
+                <SelectItem value="off">Désactivée</SelectItem>
               </SelectContent>
             </Select>
           </Field>

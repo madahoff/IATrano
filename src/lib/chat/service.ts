@@ -1,8 +1,9 @@
 import "server-only";
-import type { Conversation, Message, Prisma } from "@prisma/client";
+import type { Conversation, Message, Prisma, WebSearch } from "@prisma/client";
 import { db } from "@/lib/db";
 import { notFound } from "@/lib/errors";
 import { clarificationSchema } from "@/lib/llm/clarify";
+import { researchStepSchema, sourceSchema, type ResearchDTO } from "@/lib/search/research-types";
 import type { Clarification, ConversationSummary, MessageDTO } from "./protocol";
 
 // Couche d'accès aux conversations. Toutes les requêtes filtrent par userId :
@@ -10,7 +11,35 @@ import type { Clarification, ConversationSummary, MessageDTO } from "./protocol"
 
 const STALE_STREAM_MS = 10 * 60_000;
 
-export function toMessageDTO(m: Message): MessageDTO {
+const STATUS: Record<WebSearch["status"], ResearchDTO["status"]> = { RUNNING: "running", DONE: "done", FAILED: "failed", CANCELLED: "cancelled" };
+
+/** Restitue la recherche persistée d'une réponse ; les entrées invalides sont ignorées plutôt qu'affichées. */
+export function toResearchDTO(w: WebSearch, stale = false): ResearchDTO {
+  const steps = (Array.isArray(w.steps) ? w.steps : []).flatMap((s) => {
+    const r = researchStepSchema.safeParse(s);
+    if (!r.success) return [];
+    // Recherche interrompue (redémarrage) : aucune étape ne reste « en cours ».
+    return stale && (r.data.status === "running" || r.data.status === "pending") ? [{ ...r.data, status: "failed" as const, detail: "Interrompu" }] : [r.data];
+  });
+  const sources = (Array.isArray(w.sources) ? w.sources : []).flatMap((s) => {
+    const r = sourceSchema.safeParse(s);
+    return r.success ? [r.data] : [];
+  });
+  const known = new Set(sources.map((s) => s.n));
+  return {
+    mode: w.mode === "deep" || w.mode === "explicit" ? w.mode : "auto",
+    status: stale && w.status === "RUNNING" ? "cancelled" : STATUS[w.status],
+    queries: w.queries,
+    steps,
+    sources,
+    cited: w.status === "RUNNING" ? null : w.cited.filter((n) => known.has(n)),
+    limitations: w.limitations,
+    error: w.error,
+    durationMs: w.durationMs,
+  };
+}
+
+export function toMessageDTO(m: Message & { webSearch?: WebSearch | null }): MessageDTO {
   const clar = m.clarification ? clarificationSchema.safeParse(m.clarification) : null;
   // Un message resté « STREAMING » longtemps provient d'une génération interrompue (redémarrage, crash).
   const stale = m.status === "STREAMING" && Date.now() - m.updatedAt.getTime() > STALE_STREAM_MS;
@@ -26,14 +55,16 @@ export function toMessageDTO(m: Message): MessageDTO {
     error: stale ? "Génération interrompue." : m.error,
     durationMs: m.durationMs,
     createdAt: m.createdAt.toISOString(),
+    research: m.webSearch ? toResearchDTO(m.webSearch, stale) : null,
   };
 }
 
-export function toSummary(c: Pick<Conversation, "id" | "title" | "model" | "archivedAt" | "updatedAt">, snippet?: string): ConversationSummary {
+export function toSummary(c: Pick<Conversation, "id" | "title" | "model" | "webSearch" | "archivedAt" | "updatedAt">, snippet?: string): ConversationSummary {
   return {
     id: c.id,
     title: c.title ?? "Nouvelle conversation",
     model: c.model,
+    webSearch: c.webSearch,
     archived: Boolean(c.archivedAt),
     updatedAt: c.updatedAt.toISOString(),
     snippet,
@@ -49,7 +80,7 @@ export async function getOwnedConversation(userId: string, id: string) {
 export async function getConversationWithMessages(userId: string, id: string) {
   const conv = await db.conversation.findFirst({
     where: { id, userId },
-    include: { messages: { orderBy: { createdAt: "asc" } } },
+    include: { messages: { orderBy: { createdAt: "asc" }, include: { webSearch: true } } },
   });
   if (!conv) return null;
   return { ...toSummary(conv), messages: conv.messages.map(toMessageDTO) };
@@ -85,7 +116,7 @@ export async function listConversations(
     where,
     orderBy: { updatedAt: "desc" },
     take: limit,
-    select: { id: true, title: true, model: true, archivedAt: true, updatedAt: true },
+    select: { id: true, title: true, model: true, webSearch: true, archivedAt: true, updatedAt: true },
   });
   if (!q || convs.length === 0) return convs.map((c) => toSummary(c));
   const hits = await db.message.findMany({
@@ -101,7 +132,7 @@ export async function listConversations(
 export async function updateConversation(
   userId: string,
   id: string,
-  data: { title?: string; archived?: boolean; model?: string },
+  data: { title?: string; archived?: boolean; model?: string; webSearch?: boolean },
 ) {
   await getOwnedConversation(userId, id);
   const updated = await db.conversation.update({
@@ -110,6 +141,7 @@ export async function updateConversation(
       ...(data.title !== undefined ? { title: data.title, titleGenerated: true } : {}),
       ...(data.archived !== undefined ? { archivedAt: data.archived ? new Date() : null } : {}),
       ...(data.model !== undefined ? { model: data.model } : {}),
+      ...(data.webSearch !== undefined ? { webSearch: data.webSearch } : {}),
     },
   });
   return toSummary(updated);

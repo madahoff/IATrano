@@ -2,6 +2,7 @@ import { json, route } from "@/lib/http";
 import { requireApiUser } from "@/lib/auth/guard";
 import { getModels } from "@/lib/llm/discovery";
 import { getEffectivePreferences } from "@/lib/settings/service";
+import { isSearchConfigured, searchConfigFrom } from "@/lib/search/providers";
 import { rateLimit } from "@/lib/rate-limit";
 
 export const GET = route(async (req) => {
@@ -14,5 +15,11 @@ export const GET = route(async (req) => {
     defaultModel: prefs.defaultModel,
     appDefaultModel: prefs.app.defaultModel,
     thinkingDefault: prefs.thinkingDefault,
+    webSearch: {
+      // Fonctionnalité activée par l'administration ET moteur configuré.
+      available: prefs.app.webSearchEnabled && isSearchConfigured(searchConfigFrom(prefs.app)),
+      enabled: prefs.app.webSearchEnabled,
+      default: prefs.webSearchDefault,
+    },
   });
 });

@@ -1,0 +1,30 @@
+# Configuration SearXNG utilisée par le service « searxng » de compose.yaml.
+# IATrano interroge l'API JSON (/search?format=json) : le format json doit être autorisé ci-dessous.
+# Le secret est fourni par la variable SEARXNG_SECRET (prioritaire sur server.secret_key).
+use_default_settings: true
+
+general:
+  instance_name: "IATrano SearXNG"
+  enable_metrics: false
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Remplacé par SEARXNG_SECRET au démarrage du conteneur.
+  secret_key: "remplace-moi-par-SEARXNG_SECRET"
+  # Instance privée, joignable uniquement par IATrano sur le réseau Docker : pas de limiteur (il exige Valkey/Redis).
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0

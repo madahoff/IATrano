@@ -22,11 +22,12 @@ Plateforme de chat IA **locale et auto-hébergée** : une interface moderne insp
 10. [Réseau : quelle adresse pour le serveur IA ?](#réseau--quelle-adresse-pour-le-serveur-ia-)
 11. [Modèles, Thinking et capacités des fournisseurs](#modèles-thinking-et-capacités-des-fournisseurs)
 12. [Questions de précision](#questions-de-précision)
-13. [Sécurité](#sécurité)
-14. [Migrations et maintenance](#migrations-et-maintenance)
-15. [Tests](#tests)
-16. [Dépannage](#dépannage)
-17. [Limites connues](#limites-connues)
+13. [Recherche Web et RAG](#recherche-web-et-rag)
+14. [Sécurité](#sécurité)
+15. [Migrations et maintenance](#migrations-et-maintenance)
+16. [Tests](#tests)
+17. [Dépannage](#dépannage)
+18. [Limites connues](#limites-connues)
 
 ---
 
@@ -39,6 +40,7 @@ Plateforme de chat IA **locale et auto-hébergée** : une interface moderne insp
 - Sélecteur de modèle dans l'en-tête, qui n'affiche que les modèles **réellement détectés**, avec un état explicite si un modèle ou le serveur est indisponible. Le modèle est mémorisé par conversation et par réponse.
 - **Thinking** activable par message, uniquement si le modèle le prend en charge. Le raisonnement renvoyé par le fournisseur s'affiche dans une zone repliable, séparée de la réponse et conservée en base.
 - **Questions de précision** contextuelles (non systématiques), avec réponses à choisir ou réponse libre.
+- **Recherche Web automatique** (SearXNG auto-hébergé ou Brave) : le serveur décide quand chercher, lit les pages, sélectionne les passages pertinents (RAG) et le modèle répond avec des **citations cliquables vérifiées** ; étapes réelles affichées en direct ([détails](#recherche-web-et-rag)).
 - Gestion des erreurs : serveur injoignable, modèle absent, réponse vide, coupure réseau. Chaque cas affiche un message clair et une piste de résolution.
 
 **Conversations** : barre latérale groupée par date, recherche **côté serveur** (titres et contenu des messages, index trigrammes), renommage, archivage, suppression confirmée, titres générés automatiquement. Sur mobile, la barre devient un panneau coulissant.
@@ -171,6 +173,11 @@ Avec LM Studio ou llama.cpp, choisissez le type **Compatible OpenAI** et l'adres
 | `RATE_LIMIT_GENERATIONS_PER_MINUTE` | non | 20 par défaut, par utilisateur. |
 | `APP_PORT`, `APP_BIND` | non | Port et interface publiés par Docker Compose (`3000`, `0.0.0.0`). |
 | `NODE_VERSION` | non | Image Node du build Docker (`22-alpine` par défaut). |
+| `SEARCH_PROVIDER` | non | `searxng` (défaut) ou `brave`. Valeur initiale, modifiable dans l'administration. |
+| `SEARXNG_URL` | non | Adresse de SearXNG vue depuis le serveur (`http://searxng:8080` en Compose). Utilisée si le champ de l'administration est vide. |
+| `SEARXNG_SECRET` | oui (Docker) | Secret interne du service `searxng` (`openssl rand -hex 32`). |
+| `SEARXNG_IMAGE` | non | Image SearXNG (`searxng/searxng:latest` ; épinglez une version en production). |
+| `BRAVE_SEARCH_API_KEY` | non | Clé Brave Search si `SEARCH_PROVIDER=brave` (jamais envoyée au navigateur). |
 
 `AI_PROVIDER`, `AI_BASE_URL` et `AI_API_KEY` ne servent qu'à **initialiser** la configuration lors du premier démarrage. Elle est ensuite stockée en base et se modifie dans l'administration.
 
@@ -203,6 +210,7 @@ Services de [`compose.yaml`](compose.yaml) :
 | Service | Rôle |
 |---|---|
 | `db` | PostgreSQL 17, volume persistant `iatrano-db`, **aucun port publié** (joignable uniquement par les autres services). |
+| `searxng` | Moteur de recherche SearXNG pour la recherche Web, configuré par `searxng/settings.yml` (format JSON activé), **aucun port publié**. |
 | `migrate` | Exécute `prisma migrate deploy` (migrations en attente uniquement, jamais de reset), puis s'arrête. |
 | `app` | Next.js en mode production (`node server.js`, écoute sur `0.0.0.0:3000`), utilisateur non-root, healthcheck sur `/api/health`. Démarre après la réussite de `migrate`. |
 
@@ -215,7 +223,7 @@ L'application est accessible sur `http://<IP-de-la-machine>:${APP_PORT}` (3000 p
 ## Déploiement avec Dokploy
 
 1. **Créer le service** : *Project → Create Service → Compose*, source Git (ce dépôt), *Compose Path* : `./compose.yaml`.
-2. **Environment** : collez les variables (au minimum `POSTGRES_PASSWORD`, `AUTH_SECRET`, `SUPERADMIN_EMAIL`, `SUPERADMIN_PASSWORD`, `AI_BASE_URL`). Gardez `COOKIE_SECURE=auto` et `TRUST_PROXY=true`.
+2. **Environment** : collez les variables (au minimum `POSTGRES_PASSWORD`, `AUTH_SECRET`, `SUPERADMIN_EMAIL`, `SUPERADMIN_PASSWORD`, `AI_BASE_URL`, `SEARXNG_SECRET`). Gardez `COOKIE_SECURE=auto` et `TRUST_PROXY=true`.
 3. **Domaine** : *Domains → Add Domain*, service `app`, port `3000`, HTTPS (Let's Encrypt) si le domaine est public, ou HTTP pour un nom local.
    - Le reverse proxy Traefik de Dokploy suffit. Pour ne pas publier aussi un port sur l'hôte, supprimez le bloc `ports:` du service `app`, ou réglez `APP_PORT` sur un port libre.
 4. **Deploy**. À chaque déploiement, `migrate` applique les migrations en attente puis `app` démarre. Le volume nommé `iatrano-db` est conservé entre les redéploiements et les redémarrages.
@@ -307,6 +315,118 @@ La fonctionnalité se désactive globalement (administration) ou par utilisateur
 
 ---
 
+## Recherche Web et RAG
+
+Le chat peut chercher sur Internet, lire les pages utiles et répondre **avec des citations vérifiées** `[1]`, `[2]`… La navigation est entièrement faite par le serveur IATrano : elle fonctionne avec `qwen2.5:3b` ou tout autre modèle, **sans appel d'outils natif**.
+
+### Comportement dans le chat
+
+- Bouton **Recherche** (icône globe) dans la zone de saisie, mémorisé **par conversation** (`Conversation.webSearch`).
+  - **Activé** : le serveur décide seul s'il faut chercher (voir ci-dessous) ; une demande explicite (« cherche sur internet… », « avec des sources ») déclenche toujours une recherche.
+  - **Désactivé** : **aucune** recherche, même sur demande explicite (comportement retenu pour rester prévisible). Le modèle répond avec ses connaissances et l'historique.
+- Valeur initiale : *Administration → Recherche Web* (« automatique par défaut », activée à l'installation), surchargeable dans *Paramètres → IA*.
+- Pendant la recherche, un panneau repliable au-dessus de la réponse affiche les **étapes réellement exécutées** (analyse, requêtes, recherche, consultation de chaque page avec succès/échec, sélection des passages, contexte, génération), avec un intitulé dynamique (« Recherche sur le Web… », « Consultation des pages… », « Analyse des sources… », « Préparation de la réponse… », « Recherche terminée · 3 pages lues · 4 sources retenues »). Il se replie dès que la réponse commence.
+- Sous la réponse : rangée compacte d'icônes + « N sources » (nombre de sources **citées et validées**), dépliable en liste (numéro, icône, site, titre, date de publication si connue, extrait). Les marqueurs du texte ouvrent une fiche de la source (utilisable au tactile) ; tous les liens s'ouvrent dans un nouvel onglet, sans `Referer`.
+
+### Décision automatique ([`src/lib/search/decide.ts`](src/lib/search/decide.ts))
+
+Règles explicites et testées, sans appel au modèle : recherche pour l'actualité, les dates récentes, les prix, versions, documentations, lois, scores, statistiques… ; recherche **approfondie** (3 requêtes, plus de sources) pour les comparaisons ; **aucune** recherche pour les salutations, calculs, traductions, rédaction créative, code fourni ou texte à transformer. Une question de suivi courte après une réponse documentée reste documentée.
+
+### Pipeline ([`src/lib/search/pipeline.ts`](src/lib/search/pipeline.ts))
+
+```
+Question → décision → requêtes (modèle, JSON validé, repli déterministe, données personnelles retirées)
+ → moteur de recherche (requêtes en parallèle) → dédoublonnage des URL équivalentes, 2 pages max par site,
+   priorité aux sources primaires et récentes → téléchargement sécurisé des N meilleures pages (parallèle)
+ → extraction du texte utile + métadonnées réelles → segmentation (~700 caractères, chevauchement, titres de section)
+ → classement BM25 (+ couverture des termes, titre, fraîcheur, source primaire) → suppression des quasi-doublons
+ → budget de contexte → contexte <documents> numéroté → génération en streaming
+ → validation serveur des citations → persistance
+```
+
+- **Extraction** ([`extract.ts`](src/lib/search/extract.ts)) : supprime scripts, styles, formulaires, menus, en-têtes/pieds de page, bandeaux cookies, partages, contenus cachés ; lit titre, nom du site, URL canonique (même site uniquement), icône (même domaine uniquement, sinon `/favicon.ico` du domaine), date de publication (`article:published_time`, JSON-LD…). **Aucune métadonnée n'est inventée** : la date de consultation n'est jamais présentée comme date de publication.
+- **Page inaccessible** : l'échec réel est affiché (403, délai, contenu insuffisant…) ; si peu de pages sont lisibles, l'extrait du moteur peut être utilisé, explicitement marqué « extrait du moteur de recherche uniquement ».
+- **Sélection** : lexicale (BM25), mesurable et sans service supplémentaire. Aucune base vectorielle n'est déployée : elle n'apporterait un gain démontré qu'au-delà de quelques pages par question.
+- **Petits modèles** : budget documentaire borné (≈ 35 % de la fenêtre effective, 7 500 caractères au plus, 10 000 en mode approfondi), 5 sources max (6 en approfondi), format de citation le plus simple possible (`[n]`), consignes courtes, documents dans le dernier message utilisateur.
+
+### Prompt et anti-hallucination ([`rag-prompt.ts`](src/lib/search/rag-prompt.ts))
+
+Les règles sont ajoutées au message système : s'appuyer sur les extraits, citer un numéro **seulement** si l'extrait contient l'information, distinguer ce que disent les sources, les déductions et l'incertain, signaler l'insuffisance des sources et les contradictions. Les pages sont des **données non fiables** : isolées entre `<documents>` et `</documents>`, nettoyées de toute séquence imitant une balise de rôle (`<|im_start|>`, `[INST]`, `</documents>`…), et le modèle est prévenu de n'y suivre aucune instruction.
+
+### Citations ([`src/lib/chat/citations.ts`](src/lib/chat/citations.ts))
+
+À la fin de la génération, le serveur normalise les variantes produites par les petits modèles (`[1, 2]`, `【1】`, `[source 1]`, `(source : 1)`…), **retire toute référence ne correspondant à aucune source transmise**, supprime la liste « Sources » éventuellement ajoutée par le modèle, puis envoie l'événement `citations` (texte final + numéros validés), qui remplace le texte reçu en streaming. Pendant le streaming, un marqueur incomplet (`[1`) n'est pas affiché et seuls les numéros connus deviennent cliquables (plugin remark : nœuds structurés, pas de remplacement de chaînes dans le HTML). Si le modèle ne cite rien, la liste est présentée comme « sources consultées, non citées dans le texte ».
+
+### Streaming
+
+Le flux NDJSON existant de `/api/chat` (une ligne JSON par événement) est étendu ; il est préféré à SSE car il porte déjà l'annulation et la persistance. Événements ajoutés ([`research-types.ts`](src/lib/search/research-types.ts), validés par Zod côté navigateur) :
+
+| Événement | Contenu |
+|---|---|
+| `research_start` | mode (`auto` / `explicit` / `deep`), raison de la décision |
+| `research_step` | étape complète (`id`, `kind`, libellé, détail, statut `pending/running/done/failed`, compteur, pages consultées) ; `seq` croissant, mise à jour par `id` |
+| `research_sources` | sources numérotées transmises au modèle |
+| `research_end` | statut, requêtes exécutées, limites rencontrées, erreur |
+| `citations` | texte final validé, numéros cités, nombre de références retirées |
+| `notice` | `search_unavailable`, `citations_removed` (en plus des avis existants) |
+
+L'annulation (bouton Stop ou fermeture de l'onglet) interrompt aussi les requêtes au moteur et les téléchargements en cours ; aucune étape ne reste « en cours » (côté client comme en base).
+
+### Stockage ([`prisma/schema.prisma`](prisma/schema.prisma), modèle `WebSearch`)
+
+Une ligne par réponse documentée, supprimée avec la réponse (édition, régénération, suppression de conversation) : question, mode, raison, fournisseur, modèle, statut, requêtes, étapes (JSON), **sources numérotées avec les seuls passages transmis au modèle**, numéros cités validés, limites, erreur, durée. Les pages complètes ne sont **jamais** stockées en base. Le texte de la réponse conserve ses marqueurs `[n]`, qui renvoient au champ `n` des sources de **cette** réponse : une ancienne conversation réaffiche exactement les mêmes citations. Si une page source devient inaccessible plus tard, le lien et le passage utilisé restent affichés tels qu'au moment de la consultation (date de consultation conservée), sans revérification.
+
+Cache : en mémoire du processus uniquement (résultats et pages extraites, 15 min par défaut, configurable, 0 = désactivé), jamais sur disque ; les sources servies depuis le cache sont signalées comme telles.
+
+### Fournisseurs de recherche ([`src/lib/search/providers`](src/lib/search/providers))
+
+| Fournisseur | Configuration | Remarques |
+|---|---|---|
+| **SearXNG** (recommandé, gratuit, auto-hébergé) | `SEARXNG_URL` ou Administration → Recherche Web | Service `searxng` inclus dans `compose.yaml`, sans port publié. Le format `json` doit être autorisé ([`searxng/settings.yml`](searxng/settings.yml)). |
+| **Brave Search API** | `SEARCH_PROVIDER=brave` + `BRAVE_SEARCH_API_KEY` (ou saisie dans l'administration) | Offre gratuite limitée ; la clé n'est jamais renvoyée au navigateur ni journalisée. |
+
+Ajouter un moteur : implémenter `SearchProvider` (une méthode `search`) et l'enregistrer dans `providers/index.ts` (+ enum `SearchProviderType`).
+
+**Administration → Recherche Web** : activation globale, valeur par défaut du bouton, fournisseur, adresse SearXNG, clé Brave, résultats par requête (8), pages consultées (4), durée maximale (20 s), cache ; **test réel** (recherche + lecture de 3 pages, avec nombre de résultats, pages lues et erreurs) et dernières erreurs techniques. Les modifications s'appliquent dès l'enregistrement (cache vidé si le moteur change).
+
+**Repli si le moteur est indisponible** (non configuré, injoignable, 403, quota) : le panneau affiche l'échec, un avis explique que la réponse n'utilise aucune source Web, le modèle est prévenu de ne pas prétendre avoir cherché, et toute référence `[n]` est retirée.
+
+### SearXNG en local (hors Docker)
+
+```bash
+git clone --depth 1 https://github.com/searxng/searxng.git && cd searxng
+python3 -m venv .venv && .venv/bin/pip install -U pip setuptools wheel pyyaml msgspec typing_extensions
+.venv/bin/pip install --use-pep517 --no-build-isolation -e .
+sed 's/port: 8080/port: 8888/; s/bind_address: "0.0.0.0"/bind_address: "127.0.0.1"/' ../IATrano/searxng/settings.yml > settings.local.yml
+SEARXNG_SETTINGS_PATH=$PWD/settings.local.yml SEARXNG_SECRET=$(openssl rand -hex 16) .venv/bin/python -m searx.webapp
+# puis SEARXNG_URL=http://localhost:8888 dans .env (ou dans l'administration)
+```
+
+### Docker et Dokploy
+
+- `docker compose up -d` démarre aussi `searxng` (renseignez `SEARXNG_SECRET`). L'application l'interroge sur `http://searxng:8080` (valeur par défaut de `SEARXNG_URL` en Compose).
+- **Dokploy** : ajoutez `SEARXNG_SECRET` aux variables ; le fichier `searxng/settings.yml` du dépôt est monté en lecture seule. Le conteneur `app` doit pouvoir sortir sur Internet (ports 80/443) pour lire les pages ; le conteneur `searxng` aussi, pour interroger les moteurs.
+- Épinglez l'image (`SEARXNG_IMAGE=searxng/searxng:<version>`) pour des déploiements reproductibles.
+
+### Sécurité de la navigation ([`safe-fetch.ts`](src/lib/search/safe-fetch.ts), [`ip.ts`](src/lib/search/ip.ts))
+
+- Seules les URL issues des résultats du moteur sont téléchargées : aucune route ne permet de faire récupérer une URL arbitraire (pas de proxy HTTP).
+- `http`/`https` uniquement, ports 80/443, aucun identifiant dans l'URL ; noms internes refusés (`localhost`, `*.local`, `*.internal`, noms sans point comme `db` ou `searxng`, formes numériques détournées).
+- Résolution DNS **puis connexion épinglée** sur les adresses vérifiées (pas de DNS rebinding) ; refus de toute adresse non publique : boucle locale, réseaux privés (dont Docker et Tailscale/CGNAT), lien local et métadonnées cloud (`169.254.169.254`), multicast, réservées, IPv6 locales, IPv4 imbriquées dans IPv6 (`::ffff:127.0.0.1`, NAT64, 6to4).
+- Redirections suivies manuellement (4 max), **chaque destination revalidée**, pas de rétrogradation https → http.
+- 1,5 Mo max après décompression (protection contre les bombes gzip), 9 s max par page, durée totale bornée ; types `text/html`, `application/xhtml+xml`, `text/plain` uniquement ; aucun cookie ni en-tête d'authentification envoyé.
+- Le HTML n'est jamais rendu : seul du texte extrait atteint le modèle, et la réponse est affichée en Markdown sans HTML brut.
+- Les requêtes envoyées au moteur sont débarrassées des e-mails, numéros de téléphone/carte/IBAN, jetons et mots de passe ; l'historique privé n'est jamais transmis au moteur (seul un court contexte sert au modèle local pour reformuler).
+
+### Vérifier une recherche complète avec Qwen
+
+1. Démarrez SearXNG (Docker ou local) et vérifiez *Administration → Recherche Web → Tester* : nombre de résultats > 0 et pages lues.
+2. Dans une nouvelle conversation (bouton **Recherche** actif), avec `qwen2.5:3b`, demandez : « Quelle est la dernière version de Next.js et quelles sont ses nouveautés ? ».
+3. Attendu : panneau « Recherche sur le Web… » avec les requêtes et les pages consultées (réussies/échouées), puis réponse avec marqueurs cliquables et rangée « N sources ». Rechargez la page : panneau et citations sont restitués à l'identique.
+4. Contre-épreuve : « Combien font 17 fois 23 ? » ne déclenche aucune recherche.
+
+---
+
 ## Sécurité
 
 - Mots de passe hachés avec **scrypt** (N=2¹⁵, r=8, p=1, sel aléatoire) ; temps de réponse identique, que l'e-mail existe ou non.
@@ -363,6 +483,7 @@ TEST_DATABASE_URL=… LLM_TEST_URL=http://localhost:11434 LLM_TEST_MODEL=qwen2.5
 
 - **Unitaires** : analyse `<think>` et `<clarify>` en streaming, heuristique de clarification, protocole NDJSON, construction du contexte et des titres, scrypt, jetons, permissions, limitation de débit, validation d'URL, diagnostics réseau, adaptateurs Ollama et OpenAI (découverte, capacités, raisonnement, erreurs, annulation, délai d'inactivité, sorties structurées).
 - **Intégration** (vraie base, vrais handlers de routes ; seul le contexte de requête Next.js est simulé) : isolation des conversations, recherche, authentification, désactivation, limitation des connexions, CSRF, autorisations d'administration, protection du dernier super-administrateur, URL et clé d'API, orchestration du streaming avec un fournisseur factice (Thinking, clarifications valides et invalides, repli structuré, annulation, erreurs, modèle absent, réponse vide, édition et régénération, limitation de débit), bootstrap idempotent, cohérence schéma/migrations.
+- **Recherche Web** : unitaires ([`web-security.test.ts`](tests/unit/web-security.test.ts), [`citations.test.ts`](tests/unit/citations.test.ts), [`search-pipeline.test.ts`](tests/unit/search-pipeline.test.ts)) — classification IP, validation d'URL, DNS rebinding, contenus hostiles, citations, décision, requêtes, extraction, segmentation, classement ; les redirections malveillantes réelles (via httpbin.org) sont ignorées hors ligne. Intégration ([`web-search.test.ts`](tests/integration/web-search.test.ts)) : scénarios 1 à 8 dans `/api/chat` avec vraie base et vrai pipeline (moteur, téléchargements et LLM simulés).
 - La base de test doit avoir un nom contenant « test » : elle est vidée entre les tests.
 
 ---
@@ -385,6 +506,12 @@ TEST_DATABASE_URL=… LLM_TEST_URL=http://localhost:11434 LLM_TEST_MODEL=qwen2.5
 | `migrate` en erreur | Base injoignable ou mot de passe avec caractères spéciaux | `POSTGRES_PASSWORD` uniquement hexadécimal ; `docker compose logs migrate` |
 | Port 3000 déjà utilisé | Autre service | `APP_PORT=3100` (Docker) ou `PORT=3100 pnpm dev` |
 | Build Docker : `lookup registry-1.docker.io … permission denied` | Le démon Docker n'a pas d'accès DNS (constaté avec Docker installé en snap) | Corrigez le DNS du démon, ou utilisez une image Node déjà présente : `NODE_VERSION=lts-alpine docker compose build` |
+| « Recherche Web impossible : Aucune adresse SearXNG n'est configurée » | `SEARXNG_URL` vide et champ d'administration vide | Renseignez l'adresse (Compose : `http://searxng:8080`) puis *Tester* |
+| « SearXNG refuse le format JSON (403) » | `json` absent de `search.formats` | Utilisez `searxng/settings.yml` du dépôt (ou ajoutez `json`) |
+| « SearXNG limite le nombre de requêtes (429) » | Limiteur actif sur une instance publique/partagée | `server.limiter: false` pour l'instance privée d'IATrano |
+| Recherche OK mais « 0 page lue » | Conteneur `app` sans accès Internet, sites protégés (403) ou pages dynamiques | Vérifiez la sortie réseau du conteneur ; augmentez « pages consultées » |
+| Moteurs SearXNG muets (`unresponsive_engines`) | Moteurs amont bloqués ou en limite | Normal ponctuellement ; voir les logs `docker compose logs searxng`, désactivez les moteurs défaillants dans `settings.yml` |
+| Le modèle ne cite aucune source | Petit modèle qui ne suit pas le format | Les sources restent listées comme « consultées, non citées » ; un modèle plus grand cite mieux |
 | Copier ne fonctionne pas sur mobile en HTTP | API presse-papiers réservée aux contextes sécurisés | Un repli est intégré ; HTTPS recommandé |
 
 ---
@@ -399,3 +526,4 @@ TEST_DATABASE_URL=… LLM_TEST_URL=http://localhost:11434 LLM_TEST_MODEL=qwen2.5
 - **Formules LaTeX** : non rendues (affichées en texte brut).
 - **Génération liée à la connexion** : fermer l'onglet arrête la génération ; la partie reçue est conservée (état « interrompue »).
 - Pas d'inscription publique : les comptes sont créés par un administrateur.
+- **Recherche Web** : la décision automatique repose sur des règles (français/anglais) et peut manquer une question implicite — le bouton reste prioritaire et « cherche sur internet » force la recherche. Les pages rendues en JavaScript, les PDF et les sites qui bloquent les robots ne sont pas lus (extrait du moteur au mieux). La qualité des citations dépend du modèle : avec un 3B, une phrase peut être attribuée à une source qui ne la soutient qu'en partie, et des contradictions peuvent ne pas être signalées ; la validation serveur garantit seulement que chaque numéro correspond à un document réellement récupéré. Les icônes des sites sont chargées par le navigateur directement depuis le domaine de la source (sans `Referer`).

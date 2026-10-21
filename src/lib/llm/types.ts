@@ -37,6 +37,8 @@ export type GenerateRequest = {
   /** true/false : demander/désactiver explicitement le raisonnement. undefined : ne rien envoyer. */
   think?: boolean;
   temperature?: number;
+  /** Fenêtre de contexte imposée au moteur (num_ctx d'Ollama). Ignorée par les moteurs qui la fixent au chargement. */
+  numCtx?: number;
   signal?: AbortSignal;
 };
 
@@ -44,7 +46,7 @@ export type GenerateRequest = {
 export type ProviderChunk =
   | { type: "thinking"; delta: string }
   | { type: "text"; delta: string }
-  | { type: "done"; reason?: string; evalCount?: number };
+  | { type: "done"; reason?: string; evalCount?: number; promptTokens?: number };
 
 export type ConnectionTest = {
   ok: boolean;

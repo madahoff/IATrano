@@ -7,7 +7,7 @@ import { requestContext } from "./request-context";
 let seq = 0;
 
 export async function resetDb() {
-  await db.$executeRawUnsafe('TRUNCATE "Message", "Conversation", "Session", "UserSettings", "User", "ErrorLog", "AppSettings" CASCADE');
+  await db.$executeRawUnsafe('TRUNCATE "Message", "Conversation", "Session", "UserSettings", "User", "ErrorLog", "AppSettings", "ModelContextConfig" CASCADE');
 }
 
 export async function createUser(role: Role = "USER", overrides: { email?: string; password?: string; isActive?: boolean } = {}) {

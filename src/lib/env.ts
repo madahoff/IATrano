@@ -21,6 +21,10 @@ const schema = z.object({
   TRUST_PROXY: boolish.default("false"),
   RATE_LIMIT_GENERATIONS_PER_MINUTE: z.coerce.number().int().positive().default(20),
   IATRANO_IN_DOCKER: boolish.default("false"),
+  // Recherche Web (valeurs par défaut ; l'administration peut les remplacer)
+  SEARCH_PROVIDER: z.enum(["searxng", "brave"]).default("searxng"),
+  SEARXNG_URL: z.string().optional(),
+  BRAVE_SEARCH_API_KEY: z.string().optional(),
 });
 
 export type ServerEnv = z.infer<typeof schema> & { authSecret: string };

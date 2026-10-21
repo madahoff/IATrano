@@ -9,6 +9,8 @@ import { formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
 import { ThinkingBlock } from "./thinking-block";
+import { ResearchPanel } from "./research-panel";
+import { SourcesSummary } from "./sources";
 import type { UIMessage } from "./use-chat";
 
 export const UserMessage = memo(function UserMessage({
@@ -104,12 +106,17 @@ export const AssistantMessage = memo(function AssistantMessage({
   const streaming = message.status === "STREAMING";
   const hasText = message.content.length > 0;
   const showThinking = Boolean(message.thinking);
+  const research = message.research;
+  // Une recherche sans source (échec, aucun résultat) n'active pas les citations : tout [n] serait faux.
+  const citeSources = research && research.sources.length > 0 ? research.sources : research ? [] : undefined;
+  const researching = research?.status === "running";
 
   return (
     <div className="group/msg flex flex-col">
+      {research && <ResearchPanel research={research} answerStarted={hasText} />}
       {showThinking && <ThinkingBlock thinking={message.thinking!} active={streaming} answerStarted={hasText} />}
 
-      {streaming && !hasText && !showThinking && (
+      {streaming && !hasText && !showThinking && !researching && (
         <div className="flex h-7 items-center gap-1" aria-label="Génération en cours">
           <span className="size-2 animate-pulse rounded-full bg-foreground/60" />
           <span className="size-2 animate-pulse rounded-full bg-foreground/40 [animation-delay:150ms]" />
@@ -117,7 +124,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         </div>
       )}
 
-      {hasText && <Markdown content={message.content} />}
+      {hasText && <Markdown content={message.content} sources={citeSources} streaming={streaming} />}
       {streaming && hasText && <span className="mt-1 inline-block h-4 w-1.5 animate-pulse rounded-full bg-foreground/50" aria-hidden />}
 
       {message.notices
@@ -128,6 +135,8 @@ export const AssistantMessage = memo(function AssistantMessage({
             {n.message}
           </p>
         ))}
+
+      {research && !streaming && <SourcesSummary sources={research.sources} cited={research.cited ?? (message.status === "COMPLETE" ? null : [])} />}
 
       {message.status === "ERROR" && (
         <div role="alert" className="mt-3 rounded-2xl bg-destructive/10 px-4 py-3 text-sm">

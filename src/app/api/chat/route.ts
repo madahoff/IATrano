@@ -6,7 +6,7 @@ import { env } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import { encodeEvent, type StreamEvent } from "@/lib/chat/protocol";
 import { prepareGeneration, resolveModel, runGeneration } from "@/lib/chat/generate";
-import { getAppSettings } from "@/lib/settings/service";
+import { getEffectivePreferences } from "@/lib/settings/service";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 600;
@@ -18,6 +18,7 @@ const schema = z.object({
   messageId: z.string().min(1).max(64).optional(),
   model: z.string().min(1, "Aucun modèle sélectionné.").max(200),
   thinking: z.boolean().default(false),
+  webSearch: z.boolean().optional(),
 });
 
 export const POST = route(async (req) => {
@@ -27,8 +28,8 @@ export const POST = route(async (req) => {
   if (!limit.ok) throw tooManyRequests(limit.retryAfterSec);
 
   const resolved = await resolveModel(body.model, body.thinking);
-  const settings = await getAppSettings();
-  const prepared = await prepareGeneration(user.id, body, body.model, resolved.thinkingEffective, settings.providerType);
+  const prefs = await getEffectivePreferences(user.id);
+  const prepared = await prepareGeneration(user.id, body, body.model, resolved.thinkingEffective, prefs.app.providerType, prefs.webSearchDefault);
 
   // L'annulation côté navigateur (AbortController) ferme la requête : on interrompt alors l'appel au fournisseur.
   const abort = new AbortController();

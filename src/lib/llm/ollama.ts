@@ -32,8 +32,17 @@ type ChatLine = {
   done?: boolean;
   done_reason?: string;
   eval_count?: number;
+  prompt_eval_count?: number;
   error?: string;
 };
+
+/** Options de génération Ollama : num_ctx est toujours explicite, sinon Ollama tronque au-delà de 4096 tokens. */
+function options(req: GenerateRequest) {
+  const o: Record<string, unknown> = {};
+  if (req.temperature !== undefined) o.temperature = req.temperature;
+  if (req.numCtx) o.num_ctx = req.numCtx;
+  return Object.keys(o).length ? o : undefined;
+}
 
 function cap(list: string[] | undefined, name: string): Capability {
   if (!list) return "unknown";
@@ -145,9 +154,8 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async *chatStream(req: GenerateRequest): AsyncGenerator<ProviderChunk> {
-    const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream: true };
+    const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream: true, options: options(req) };
     if (req.think !== undefined) body.think = req.think;
-    if (req.temperature !== undefined) body.options = { temperature: req.temperature };
     const res = await fetchWithTimeout(
       this.url("/api/chat"),
       { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
@@ -177,7 +185,7 @@ export class OllamaProvider implements LlmProvider {
       if (data.message?.content) yield* thinkTags.push(data.message.content);
       if (data.done) {
         yield* thinkTags.flush();
-        yield { type: "done", reason: data.done_reason, evalCount: data.eval_count };
+        yield { type: "done", reason: data.done_reason, evalCount: data.eval_count, promptTokens: data.prompt_eval_count };
         return;
       }
     }
@@ -190,10 +198,9 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async complete(req: GenerateRequest, format?: Record<string, unknown>): Promise<string> {
-    const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream: false };
+    const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream: false, options: options(req) };
     if (format) body.format = format;
     if (req.think !== undefined) body.think = req.think;
-    if (req.temperature !== undefined) body.options = { temperature: req.temperature };
     const res = await fetchWithTimeout(
       this.url("/api/chat"),
       { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },

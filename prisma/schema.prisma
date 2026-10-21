@@ -40,6 +40,48 @@ enum ThemePreference {
   DARK
 }
 
+enum SearchProviderType {
+  SEARXNG
+  BRAVE
+}
+
+enum WebSearchStatus {
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+// --- Contexte et mémoire (voir src/lib/context et src/lib/memory)
+enum MemoryKind {
+  // Préférence ou consigne durable (« réponds en français », « tutoie-moi »)
+  PREFERENCE
+  // Fait stable sur l'utilisateur (métier, outils, environnement)
+  FACT
+  // Information liée à un projet nommé
+  PROJECT
+}
+
+enum MemorySource {
+  MANUAL
+  AUTO
+}
+
+enum SummaryStatus {
+  // Résumé utilisé pour construire le contexte actif
+  ACTIVE
+  // Remplacé par une version plus récente (conservé pour l'historique)
+  SUPERSEDED
+  // Invalidé : des messages qu'il couvrait ont été modifiés ou supprimés
+  STALE
+}
+
+enum CompactionStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 enum LogLevel {
   INFO
   WARN
@@ -60,6 +102,7 @@ model User {
   sessions      Session[]
   conversations Conversation[]
   settings      UserSettings?
+  memories      Memory[]
 }
 
 model Session {
@@ -85,6 +128,10 @@ model UserSettings {
   defaultModel          String?
   thinkingDefault       Boolean?
   clarificationsEnabled Boolean?
+  webSearchDefault      Boolean?
+  // Mémoire persistante : utilisation dans les prompts et enregistrement automatique.
+  memoryEnabled         Boolean         @default(true)
+  memoryAutoSave        Boolean         @default(true)
   theme                 ThemePreference @default(SYSTEM)
   updatedAt             DateTime        @updatedAt
 
@@ -103,8 +150,37 @@ model AppSettings {
   clarificationsEnabled Boolean      @default(true)
   systemPrompt          String?
   requestTimeoutMs      Int          @default(120000)
-  updatedAt             DateTime     @updatedAt
-  updatedById           String?
+
+  // --- Recherche Web (pipeline RAG, voir src/lib/search)
+  // Interrupteur général de la fonctionnalité (aucune recherche possible si false).
+  webSearchEnabled     Boolean            @default(true)
+  // Valeur par défaut du contrôle « Recherche Web automatique » des nouvelles conversations.
+  webSearchAutoDefault Boolean            @default(true)
+  searchProvider       SearchProviderType @default(SEARXNG)
+  // null = valeur de SEARXNG_URL (ou aucun moteur configuré)
+  searxngUrl           String?
+  // Clé Brave Search. Jamais renvoyée au navigateur.
+  braveApiKey          String?
+  searchMaxResults     Int                @default(8)
+  searchMaxPages       Int                @default(4)
+  searchTimeoutMs      Int                @default(20000)
+  // Durée de conservation en mémoire des résultats et pages déjà récupérés (0 = pas de cache).
+  searchCacheTtlSec    Int                @default(900)
+
+  // --- Contexte (voir src/lib/context)
+  // Fenêtre envoyée au moteur (num_ctx d'Ollama) quand aucun réglage propre au modèle n'existe.
+  contextDefaultWindow   Int     @default(8192)
+  // Tokens réservés à la réponse : la capacité effective du prompt est fenêtre − réserve.
+  contextResponseReserve Int     @default(1024)
+  contextWarnPct         Int     @default(70)
+  contextHighPct         Int     @default(85)
+  // Compaction automatique après une réponse au-delà de ce seuil (0 = désactivée).
+  contextAutoCompactPct  Int     @default(90)
+  // Interrupteur général de la mémoire persistante.
+  memoryFeatureEnabled   Boolean @default(true)
+
+  updatedAt   DateTime @updatedAt
+  updatedById String?
 }
 
 model Conversation {
@@ -113,39 +189,144 @@ model Conversation {
   title          String?
   titleGenerated Boolean   @default(false)
   model          String?
+  // État du contrôle « Recherche Web automatique » de cette conversation (fixé à la création).
+  webSearch      Boolean   @default(true)
   archivedAt     DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messages Message[]
+  // Dernière compaction du contexte (les versions de résumés sont dans ContextSummary).
+  compactionStatus    CompactionStatus?
+  compactionStartedAt DateTime?
+  compactedAt         DateTime?
+  compactionError     String?
+
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  summaries ContextSummary[]
 
   @@index([userId, archivedAt, updatedAt(sort: Desc)])
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Conversation_title_trgm_idx")
 }
 
 model Message {
-  id              String        @id @default(cuid())
-  conversationId  String
-  role            MessageRole
-  content         String        @default("")
+  id               String        @id @default(cuid())
+  conversationId   String
+  role             MessageRole
+  content          String        @default("")
   // Raisonnement renvoyé séparément par le fournisseur (jamais simulé).
-  thinking        String?
-  thinkingEnabled Boolean       @default(false)
+  thinking         String?
+  thinkingEnabled  Boolean       @default(false)
   // Demande de précisions validée côté serveur : { questions: [{ question, options[] }] }
-  clarification   Json?
-  model           String?
-  provider        ProviderType?
-  status          MessageStatus @default(COMPLETE)
-  error           String?
-  durationMs      Int?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  clarification    Json?
+  model            String?
+  provider         ProviderType?
+  status           MessageStatus @default(COMPLETE)
+  error            String?
+  durationMs       Int?
+  // Consommation du contexte pour cette réponse (assistant uniquement).
+  // promptTokens/completionTokens : mesurés par le fournisseur quand il les renvoie (jamais estimés).
+  promptTokens     Int?
+  completionTokens Int?
+  // Fenêtre et décomposition estimée du prompt réellement envoyé : { total, window, reserve, parts, dropped, ... }
+  contextUsage     Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  webSearch    WebSearch?
 
   @@index([conversationId, createdAt])
   @@index([content(ops: raw("gin_trgm_ops"))], type: Gin, map: "Message_content_trgm_idx")
+}
+
+// Trace d'une recherche Web associée à UNE réponse (supprimée avec elle).
+// Ne contient que les métadonnées des sources et les passages réellement transmis au modèle,
+// jamais les pages complètes.
+model WebSearch {
+  id          String             @id @default(cuid())
+  messageId   String             @unique
+  question    String
+  // auto | explicit | deep
+  mode        String
+  // Raison de la décision (règle déclenchée), pour l'explicabilité.
+  reason      String?
+  provider    SearchProviderType
+  model       String?
+  status      WebSearchStatus    @default(RUNNING)
+  queries     String[]
+  // Étapes affichées : [{ id, kind, label, detail?, status, count?, items? }]
+  steps       Json               @default("[]")
+  // Sources numérotées transmises au modèle : [{ n, url, title, host, ..., passages: [...] }]
+  sources     Json               @default("[]")
+  // Numéros réellement cités et validés dans la réponse finale.
+  cited       Int[]
+  // Limites ayant affecté le résultat (pages inaccessibles, moteur indisponible…).
+  limitations String[]
+  error       String?
+  durationMs  Int?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+// Fenêtre de contexte réglée manuellement pour un modèle (prime sur le défaut de l'application).
+model ModelContextConfig {
+  model           String   @id
+  contextWindow   Int
+  // null = réserve par défaut de l'application
+  responseReserve Int?
+  updatedAt       DateTime @updatedAt
+  updatedById     String?
+}
+
+// Résumé de compaction d'une conversation. Les messages d'origine ne sont jamais modifiés :
+// le résumé ACTIF remplace, dans le prompt uniquement, les messages jusqu'à coveredMessageId inclus.
+model ContextSummary {
+  id               String        @id @default(cuid())
+  conversationId   String
+  version          Int
+  status           SummaryStatus @default(ACTIVE)
+  // Sections structurées : { objective, constraints[], decisions[], facts[], state[], nextSteps[], references[] }
+  content          Json
+  // Texte injecté dans le prompt (rendu des sections)
+  text             String
+  coveredMessageId String
+  coveredUntil     DateTime
+  coveredCount     Int
+  // Estimations du contexte actif avant/après (tokens)
+  tokensBefore     Int?
+  tokensAfter      Int?
+  summaryTokens    Int
+  model            String
+  trigger          String
+  createdAt        DateTime      @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, version])
+  @@index([conversationId, status])
+}
+
+// Mémoire persistante, strictement propre à un utilisateur.
+model Memory {
+  id                   String       @id @default(cuid())
+  userId               String
+  kind                 MemoryKind
+  // Nom du projet pour kind = PROJECT
+  project              String?
+  content              String
+  source               MemorySource @default(MANUAL)
+  sourceConversationId String?
+  useCount             Int          @default(0)
+  lastUsedAt           DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind])
 }
 
 model ErrorLog {

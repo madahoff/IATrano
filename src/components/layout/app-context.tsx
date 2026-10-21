@@ -15,6 +15,7 @@ export type ModelsState = {
   defaultModel: string | null;
   appDefaultModel: string | null;
   thinkingDefault: boolean;
+  webSearch: { available: boolean; enabled: boolean; default: boolean };
 };
 
 type AppContextValue = {
@@ -62,6 +63,7 @@ export function AppProvider({
         defaultModel: prev?.defaultModel ?? null,
         appDefaultModel: prev?.appDefaultModel ?? null,
         thinkingDefault: prev?.thinkingDefault ?? false,
+        webSearch: prev?.webSearch ?? { available: false, enabled: false, default: false },
       }));
     } finally {
       loadingRef.current = false;
@@ -79,6 +81,7 @@ export function AppProvider({
       const merged: ConversationSummary = {
         title: "Nouvelle conversation",
         model: null,
+        webSearch: true,
         archived: false,
         updatedAt: new Date().toISOString(),
         ...existing,

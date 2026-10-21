@@ -28,6 +28,8 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-context: var(--context);
+  --color-context-track: var(--context-track);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -81,6 +83,9 @@
   --success-foreground: oklch(0.99 0 0);
   --warning: oklch(0.8 0.15 85);
   --warning-foreground: oklch(0.42 0.09 75);
+  /* Indicateur de contexte : progression bleue sur fond discret */
+  --context: oklch(0.58 0.19 256);
+  --context-track: oklch(0.91 0.01 256);
   /* --border n'est utilisé que pour les filets de séparation (Separator), jamais en bordure. */
   --border: oklch(0.93 0 0);
   --input: oklch(0.965 0 0);
@@ -114,6 +119,8 @@
   --success-foreground: oklch(0.16 0 0);
   --warning: oklch(0.83 0.15 85);
   --warning-foreground: oklch(0.86 0.13 85);
+  --context: oklch(0.7 0.15 256);
+  --context-track: oklch(0.3 0.02 256);
   --border: oklch(0.24 0 0);
   --input: oklch(0.205 0 0);
   --ring: oklch(0.6 0 0);

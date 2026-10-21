@@ -148,6 +148,12 @@
   .prose-chat > * + * {
     @apply mt-3;
   }
+  .prose-chat > :first-child {
+    @apply mt-0;
+  }
+  .prose-chat > :last-child {
+    @apply mb-0;
+  }
   .prose-chat h1 { @apply mt-6 text-xl font-semibold; }
   .prose-chat h2 { @apply mt-6 text-lg font-semibold; }
   .prose-chat h3 { @apply mt-5 text-base font-semibold; }

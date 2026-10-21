@@ -21,6 +21,8 @@ export type Clarification = z.infer<typeof clarificationSchema>;
 
 export const CLARIFY_TAG = "clarify";
 
+const PLACEHOLDER_OPTION = /^[\p{L}]+\s*\d+$/u;
+
 function stripFences(raw: string): string {
   return raw
     .trim()
@@ -64,11 +66,11 @@ export function parseClarification(raw: string): Clarification | null {
   }
   const parsed = clarificationSchema.safeParse(data);
   if (!parsed.success) return null;
-  // Déduplication et nettoyage des options.
+  // Déduplication, suppression des options génériques (« Option 1 », « Destination 2 »…).
   return {
     questions: parsed.data.questions.map((q) => ({
       question: q.question,
-      options: [...new Set(q.options)].slice(0, 6),
+      options: [...new Set(q.options)].filter((o) => !PLACEHOLDER_OPTION.test(o)).slice(0, 6),
     })),
   };
 }
@@ -99,4 +101,55 @@ export function createClarifyExtractor() {
       return { text: visible, clarification, malformed: clarification === null };
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Repli pour les petits modèles qui posent leurs questions en texte au lieu d'utiliser <clarify>.
+// La DÉCISION est déterministe (heuristique stricte) ; le modèle sert uniquement à structurer
+// les questions déjà posées et à proposer des options, via une sortie JSON contrainte par schéma.
+
+const QUESTION_ITEM = /^\s*(?:\d+[.)]|[-*•])\s+.*\?\s*\**\s*$/;
+
+export function looksLikeClarificationRequest(text: string): boolean {
+  if (text.length > 1500 || text.includes("```")) return false;
+  // Règle 1 : une liste d'au moins deux questions.
+  const items = text.split("\n").filter((l) => QUESTION_ITEM.test(l));
+  if (items.length >= 2) return true;
+  // Règle 2 : réponse courte composée en bonne partie de questions (ex. « Où ? Quand ? Quel budget ? »).
+  if (text.length > 800) return false;
+  const sentences = text.split(/(?<=[.!?…])\s+/).map((x) => x.trim()).filter((x) => x.length > 2);
+  const questions = sentences.filter((x) => /\?\s*\**$/.test(x)).length;
+  return questions >= 2 && questions / sentences.length >= 0.4;
+}
+
+export const CLARIFICATION_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          question: { type: "string" },
+          options: { type: "array", items: { type: "string" } },
+        },
+        required: ["question", "options"],
+      },
+    },
+  },
+  required: ["questions"],
+} as const;
+
+export function buildClarificationExtractionPrompt(userMessage: string, answer: string) {
+  return [
+    {
+      role: "system" as const,
+      content:
+        "L'assistant vient de demander des précisions à l'utilisateur. Recopie les questions qu'il a posées (3 au maximum, les plus importantes, formulées brièvement) et propose pour chacune 2 à 5 réponses courtes, concrètes et plausibles que l'utilisateur pourrait choisir. N'invente pas de nouvelles questions. Réponds uniquement en JSON.",
+    },
+    {
+      role: "user" as const,
+      content: `Demande de l'utilisateur :\n${userMessage.slice(0, 1500)}\n\nRéponse de l'assistant :\n${answer.slice(0, 1500)}`,
+    },
+  ];
 }

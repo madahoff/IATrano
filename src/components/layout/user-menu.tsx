@@ -34,6 +34,8 @@ export async function logout() {
     toast.error("Déconnexion impossible.");
     return;
   }
+  // Rechargement complet volontaire : réinitialise tout l'état client lié à la session.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
   window.location.href = "/login";
 }
 

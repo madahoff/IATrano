@@ -96,16 +96,21 @@ export class OpenAICompatibleProvider implements LlmProvider {
       }));
   }
 
-  private body(req: GenerateRequest, stream: boolean, withExtras: boolean) {
+  private body(req: GenerateRequest, stream: boolean, withExtras: boolean, responseFormat?: unknown) {
     const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream };
+    if (responseFormat) body.response_format = responseFormat;
     if (req.temperature !== undefined) body.temperature = req.temperature;
     // Interrupteur de raisonnement pour les gabarits Qwen3 / DeepSeek (llama.cpp, vLLM, SGLang).
     if (withExtras && req.think !== undefined) body.chat_template_kwargs = { enable_thinking: req.think };
     return JSON.stringify(body);
   }
 
-  private async post(req: GenerateRequest, stream: boolean): Promise<Response> {
-    let res = await fetchWithTimeout(this.url("/chat/completions"), { method: "POST", body: this.body(req, stream, true) }, this.opts(req.signal));
+  private async post(req: GenerateRequest, stream: boolean, responseFormat?: unknown): Promise<Response> {
+    let res = await fetchWithTimeout(this.url("/chat/completions"), { method: "POST", body: this.body(req, stream, true, responseFormat) }, this.opts(req.signal));
+    if ((res.status === 400 || res.status === 422) && responseFormat) {
+      // Serveur sans prise en charge de json_schema : repli sur le mode JSON simple.
+      res = await fetchWithTimeout(this.url("/chat/completions"), { method: "POST", body: this.body(req, stream, true, { type: "json_object" }) }, this.opts(req.signal));
+    }
     // Certains serveurs stricts refusent les champs inconnus : nouvel essai sans extension.
     if ((res.status === 400 || res.status === 422) && req.think !== undefined) {
       const detail = await readErrorBody(res);
@@ -156,6 +161,12 @@ export class OpenAICompatibleProvider implements LlmProvider {
     }
     yield* thinkTags.flush();
     yield { type: "done", reason: finish, evalCount };
+  }
+
+  async completeJson(req: GenerateRequest, schema: Record<string, unknown>): Promise<string> {
+    const res = await this.post(req, false, { type: "json_schema", json_schema: { name: "result", schema } });
+    const data = (await res.json()) as SseChunk;
+    return data.choices?.[0]?.message?.content ?? "";
   }
 
   async complete(req: GenerateRequest): Promise<string> {

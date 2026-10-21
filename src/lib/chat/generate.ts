@@ -3,7 +3,14 @@ import type { Conversation, Message, Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { badRequest, notFound } from "@/lib/errors";
 import { errorDetails, logEvent } from "@/lib/logger";
-import { createClarifyExtractor, type Clarification } from "@/lib/llm/clarify";
+import {
+  buildClarificationExtractionPrompt,
+  CLARIFICATION_JSON_SCHEMA,
+  createClarifyExtractor,
+  looksLikeClarificationRequest,
+  parseClarification,
+  type Clarification,
+} from "@/lib/llm/clarify";
 import { getModels } from "@/lib/llm/discovery";
 import { buildMessages, buildTitlePrompt, fallbackTitle, sanitizeTitle } from "@/lib/llm/prompt";
 import { createProvider } from "@/lib/llm/registry";
@@ -175,13 +182,17 @@ export async function runGeneration(opts: {
       text += end.text;
       emit({ type: "text", delta: end.text });
     }
-    if (end.clarification) emit({ type: "clarification", data: end.clarification });
+    let clarification = end.clarification;
+    if (!clarification && prefs.clarificationsEnabled && looksLikeClarificationRequest(text)) {
+      clarification = await extractClarification(provider, opts.modelId, resolved, prepared.history.at(-1)?.content ?? "", text, signal);
+    }
+    if (clarification) emit({ type: "clarification", data: clarification });
     else if (end.malformed) emit({ type: "notice", code: "clarification_invalid", message: "Le modèle a proposé des questions de précision dans un format invalide ; elles ont été ignorées." });
     if (resolved.thinkingEffective && !thinking) {
       emit({ type: "notice", code: "thinking_not_returned", message: "Le fournisseur n'a renvoyé aucun flux de réflexion distinct pour cette réponse." });
     }
     const durationMs = Date.now() - startedAt;
-    if (!text.trim() && !end.clarification) {
+    if (!text.trim() && !clarification) {
       const message = thinking ? "Le modèle a réfléchi mais n'a produit aucune réponse finale." : "Le modèle a renvoyé une réponse vide.";
       emit({ type: "notice", code: "empty_response", message });
       await persist({ content: text, thinking: thinking || null, status: "ERROR", error: message, durationMs });
@@ -191,7 +202,7 @@ export async function runGeneration(opts: {
     await persist({
       content: text.trim(),
       thinking: thinking || null,
-      clarification: end.clarification ?? undefined,
+      clarification: clarification ?? undefined,
       status: "COMPLETE",
       durationMs,
     });
@@ -211,6 +222,33 @@ export async function runGeneration(opts: {
     await persist({ content: text, thinking: thinking || null, status: "ERROR", error: e.message, durationMs }).catch(() => {});
     await logEvent("ERROR", "chat", e.message, { model: opts.modelId, code: e.code, ...errorDetails(err) }, opts.userId);
     emit({ type: "error", code: e.code, message: e.message, hint: e.hint });
+  }
+}
+
+async function extractClarification(
+  provider: LlmProvider,
+  model: string,
+  resolved: ResolvedModel,
+  userMessage: string,
+  answer: string,
+  signal: AbortSignal,
+): Promise<Clarification | null> {
+  try {
+    const raw = await provider.completeJson(
+      {
+        model,
+        messages: buildClarificationExtractionPrompt(userMessage, answer),
+        think: resolved.model?.capabilities.thinking === "no" ? undefined : false,
+        temperature: 0,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      },
+      CLARIFICATION_JSON_SCHEMA as unknown as Record<string, unknown>,
+    );
+    return parseClarification(raw);
+  } catch (err) {
+    if (signal.aborted) throw err;
+    await logEvent("INFO", "chat:clarify", "Extraction des questions impossible", errorDetails(err));
+    return null;
   }
 }
 

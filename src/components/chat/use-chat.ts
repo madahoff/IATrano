@@ -96,6 +96,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
         });
         if (!res.ok || !res.body) {
           const err = await readApiError(res);
+          // Rechargement complet volontaire : réinitialise tout l'état client lié à la session.
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination
           if (res.status === 401) window.location.href = "/login";
           setMessages(snapshot);
           toast.error(err.message);
@@ -111,9 +113,11 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
               setConversationId(ev.conversationId);
               convRef.current = ev.conversationId;
               const realId = ev.assistantMessageId;
+              // L'updater peut s'exécuter plus tard : on fige l'identifiant temporaire.
+              const tempAssistantId = assistantId;
               setMessages((prev) => {
                 const next = prev.map((m) => {
-                  if (m.id === assistantId) return { ...m, id: realId, model: ev.model, thinkingEnabled: ev.thinking };
+                  if (m.id === tempAssistantId) return { ...m, id: realId, model: ev.model, thinkingEnabled: ev.thinking };
                   if (ev.userMessage && m.role === "USER" && m.id.startsWith("temp-")) {
                     return { ...m, id: ev.userMessage.id, createdAt: ev.userMessage.createdAt };
                   }
@@ -178,7 +182,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
           patchAssistant((m) => ({ ...m, status: "ERROR", error: "La réponse s'est terminée de façon inattendue." }));
         }
         return true;
-      } catch (err) {
+      } catch {
         flush();
         if (ctrl.signal.aborted) {
           if (!started) setMessages(snapshot);

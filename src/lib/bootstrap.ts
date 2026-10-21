@@ -1,6 +1,5 @@
 import "server-only";
 import { db } from "./db";
-import { env } from "./env";
 import { hashPassword } from "./auth/password";
 import { emailSchema } from "./users/service";
 import { getAppSettings } from "./settings/service";
@@ -21,9 +20,9 @@ export async function bootstrap(): Promise<void> {
   const existing = await db.user.count({ where: { role: "SUPERADMIN" } });
   if (existing > 0) return;
 
-  const e = env();
-  const email = emailSchema.safeParse(e.SUPERADMIN_EMAIL ?? "");
-  const password = e.SUPERADMIN_PASSWORD ?? "";
+  // Lu directement (et non via le cache de env()) : exécuté une seule fois par démarrage.
+  const email = emailSchema.safeParse(process.env.SUPERADMIN_EMAIL ?? "");
+  const password = process.env.SUPERADMIN_PASSWORD ?? "";
   if (!email.success || password.length < SUPERADMIN_MIN_PASSWORD) {
     await logEvent(
       "WARN",
@@ -40,7 +39,7 @@ export async function bootstrap(): Promise<void> {
   await db.user.create({
     data: {
       email: email.data,
-      name: e.SUPERADMIN_NAME?.trim() || "Super administrateur",
+      name: process.env.SUPERADMIN_NAME?.trim() || "Super administrateur",
       role: "SUPERADMIN",
       passwordHash: await hashPassword(password),
     },

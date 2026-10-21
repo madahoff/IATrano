@@ -20,6 +20,8 @@ export function LoginForm() {
     setError(null);
     try {
       await api("/api/auth/login", { method: "POST", json: { email, password } });
+      // Rechargement complet volontaire : réinitialise tout l'état client lié à la session.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       window.location.href = "/";
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Connexion impossible.");

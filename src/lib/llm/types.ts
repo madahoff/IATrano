@@ -65,6 +65,8 @@ export interface LlmProvider {
   chatStream(req: GenerateRequest): AsyncGenerator<ProviderChunk>;
   /** Génération courte non streamée (titres). */
   complete(req: GenerateRequest): Promise<string>;
+  /** Génération contrainte par un schéma JSON (sorties structurées), renvoie le texte JSON brut. */
+  completeJson(req: GenerateRequest, schema: Record<string, unknown>): Promise<string>;
 }
 
 export class ProviderError extends Error {

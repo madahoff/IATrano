@@ -185,8 +185,13 @@ export class OllamaProvider implements LlmProvider {
     yield { type: "done", reason: "eof" };
   }
 
-  async complete(req: GenerateRequest): Promise<string> {
+  async completeJson(req: GenerateRequest, schema: Record<string, unknown>): Promise<string> {
+    return this.complete(req, schema);
+  }
+
+  async complete(req: GenerateRequest, format?: Record<string, unknown>): Promise<string> {
     const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream: false };
+    if (format) body.format = format;
     if (req.think !== undefined) body.think = req.think;
     if (req.temperature !== undefined) body.options = { temperature: req.temperature };
     const res = await fetchWithTimeout(

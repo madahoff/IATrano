@@ -57,10 +57,7 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
   // Recherche dans la base (titres + contenu des messages), avec anti-rebond.
   useEffect(() => {
     const q = query.trim();
-    if (!q && !showArchived) {
-      setResults(null);
-      return;
-    }
+    if (!q && !showArchived) return;
     const ctrl = new AbortController();
     const t = setTimeout(async () => {
       setSearching(true);
@@ -82,7 +79,8 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
     };
   }, [query, showArchived, conversations]);
 
-  const list = results ?? conversations.filter((c) => !c.archived);
+  const filtering = Boolean(query.trim()) || showArchived;
+  const list = useMemo(() => (filtering ? (results ?? []) : conversations.filter((c) => !c.archived)), [filtering, results, conversations]);
   const groups = useMemo(() => {
     if (query.trim() || showArchived) return null;
     const map = new Map<DateGroup, ConversationSummary[]>();
@@ -132,7 +130,10 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setResults(null);
+            }}
             placeholder="Rechercher"
             aria-label="Rechercher dans les conversations"
             className="h-10 rounded-full bg-sidebar-accent/70 pl-9"
@@ -162,7 +163,7 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
               ))}
             </ul>
           )}
-        {list.length === 0 && !searching && (
+        {list.length === 0 && !searching && (!filtering || results !== null) && (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
             <MessageSquare className="size-5" />
             {query ? "Aucune conversation ne correspond." : showArchived ? "Aucune conversation archivée." : "Aucune conversation pour le moment."}
@@ -175,7 +176,10 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
           variant="ghost"
           size="sm"
           className={cn("h-9 justify-start gap-2.5 px-3 text-muted-foreground hover:bg-sidebar-accent", showArchived && "bg-sidebar-accent text-foreground")}
-          onClick={() => setShowArchived((s) => !s)}
+          onClick={() => {
+            setResults(null);
+            setShowArchived((s) => !s);
+          }}
           aria-pressed={showArchived}
         >
           <Archive />

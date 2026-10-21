@@ -5,13 +5,15 @@ export const DEFAULT_SYSTEM_PROMPT = `Tu es IATrano, un assistant IA qui fonctio
 Réponds dans la langue de l'utilisateur, de façon exacte, claire et structurée. Utilise le Markdown (titres, listes, tableaux) quand cela aide la lecture, et des blocs de code avec le langage indiqué pour tout code.
 Si tu ne sais pas, dis-le plutôt que d'inventer.`;
 
-export const CLARIFICATION_INSTRUCTIONS = `## Demandes de précisions (rarement)
-Par défaut, réponds directement. Exception : si la demande est tellement vague qu'une information manquante changerait complètement ta réponse (exemple : « conçois-moi une application » sans plateforme ni objectif), alors :
-1. écris une ou deux phrases expliquant ce qu'il te manque, ou propose une première piste ;
-2. termine ton message par exactement un bloc de ce format, et rien après :
-<clarify>{"questions":[{"question":"Quelle plateforme vises-tu ?","options":["Web","Mobile","Desktop"]}]}</clarify>
-Règles : JSON valide, 1 à 3 questions, 2 à 5 options courtes par question.
-N'utilise JAMAIS ce bloc pour une question claire, factuelle ou une conversation courante, ni quand tu peux raisonnablement répondre, ni juste après que l'utilisateur a répondu à tes questions.`;
+export const CLARIFICATION_INSTRUCTIONS = `RÈGLE SPÉCIALE — demandes trop vagues :
+Si la demande est trop vague pour bien répondre (ex. « conçois-moi une application », « écris un script » sans préciser lequel), ne pose PAS les questions en texte. Écris une seule phrase courte, puis termine par le bloc <clarify> contenant 1 à 3 questions en JSON, chacune avec 2 à 5 options de réponse concrètes.
+
+Exemple :
+Utilisateur : Crée-moi un site.
+Assistant : Avec plaisir ! Quelques précisions pour viser juste :
+<clarify>{"questions":[{"question":"Quel type de site ?","options":["Vitrine","Blog","E-commerce","Portfolio"]},{"question":"As-tu une technologie préférée ?","options":["WordPress","Next.js","HTML/CSS simple","Peu importe"]}]}</clarify>
+
+Si la demande est claire (question factuelle, explication, calcul, conversation) ou si l'utilisateur vient de donner des précisions, réponds directement SANS bloc <clarify>.`;
 
 export type HistoryMessage = {
   role: "USER" | "ASSISTANT";
@@ -66,7 +68,7 @@ export function buildTitlePrompt(firstUserMessage: string, answer: string): Chat
     {
       role: "system",
       content:
-        "Tu génères des titres de conversation. Réponds uniquement par un titre de 2 à 6 mots, dans la langue de l'utilisateur, sans guillemets, sans ponctuation finale, sans emoji.",
+        "Tu génères des titres de conversation. Le titre résume le SUJET de la demande de l'utilisateur (pas la réponse), en 2 à 6 mots, dans la langue de l'utilisateur. Réponds uniquement par le titre, sans guillemets, sans ponctuation finale, sans emoji. Exemple : « Combien font 12 x 7 ? » → Calcul de multiplication",
     },
     {
       role: "user",
@@ -86,7 +88,7 @@ export function sanitizeTitle(raw: string): string | null {
     .replace(/^(titre|title)\s*:\s*/i, "")
     .replace(/^["'«“*#\s]+|["'»”*.\s]+$/g, "")
     .trim();
-  if (cleaned.length < 2) return null;
+  if (cleaned.length < 2 || !/\p{L}{2,}/u.test(cleaned)) return null;
   return cleaned.length > 80 ? `${cleaned.slice(0, 77)}…` : cleaned;
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useState } from "react";
+import { useLocalStorage } from "@/hooks/use-local-storage";
 import { usePathname } from "next/navigation";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Sidebar } from "./sidebar";
@@ -15,7 +16,8 @@ export function useShell() {
 
 export function ChatShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
+  const [sidebarPref, setSidebarPref] = useLocalStorage("iatrano:sidebar");
+  const desktopCollapsed = sidebarPref === "collapsed";
   const pathname = usePathname();
 
   // Referme le panneau mobile après une navigation.
@@ -25,19 +27,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     setMobileOpen(false);
   }
 
-  useEffect(() => {
-    try {
-      setDesktopCollapsed(localStorage.getItem("iatrano:sidebar") === "collapsed");
-    } catch {}
-  }, []);
-
-  const toggleDesktop = () =>
-    setDesktopCollapsed((c) => {
-      try {
-        localStorage.setItem("iatrano:sidebar", c ? "open" : "collapsed");
-      } catch {}
-      return !c;
-    });
+  const toggleDesktop = () => setSidebarPref(desktopCollapsed ? "open" : "collapsed");
 
   return (
     <ShellContext.Provider value={{ openMobileNav: () => setMobileOpen(true), desktopCollapsed, toggleDesktop }}>

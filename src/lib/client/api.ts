@@ -32,6 +32,8 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
     throw new ApiError("Connexion au serveur impossible. Vérifiez votre réseau.", 0, "network");
   }
   if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/api/auth")) {
+    // Rechargement complet volontaire : réinitialise tout l'état client lié à la session.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = "/login";
   }
   if (!res.ok) throw await readApiError(res);

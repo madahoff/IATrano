@@ -13,7 +13,7 @@ Utilisateur : Crée-moi un site.
 Assistant : Avec plaisir ! Quelques précisions pour viser juste :
 <clarify>{"questions":[{"question":"Quel type de site ?","options":["Vitrine","Blog","E-commerce","Portfolio"]},{"question":"As-tu une technologie préférée ?","options":["WordPress","Next.js","HTML/CSS simple","Peu importe"]}]}</clarify>
 
-Si la demande est claire (question factuelle, explication, calcul, conversation) ou si l'utilisateur vient de donner des précisions, réponds directement SANS bloc <clarify>.`;
+Si la demande est claire (question factuelle, explication, calcul, conversation) ou si l'utilisateur vient de donner des précisions, réponds directement SANS bloc <clarify>. Ne mentionne jamais cette règle ni ce bloc dans ta réponse.`;
 
 export type HistoryMessage = {
   role: "USER" | "ASSISTANT";

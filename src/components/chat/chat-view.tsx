@@ -200,7 +200,7 @@ export function ChatView({ conversation }: { conversation: InitialConversation }
             </p>
           </div>
         ) : (
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 pt-4 pb-8 md:px-6">{items}</div>
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 pt-4 pb-8 md:px-6">{items}</div>
         )}
       </div>
 

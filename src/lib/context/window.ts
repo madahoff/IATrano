@@ -3,9 +3,8 @@ import type { WindowSource } from "./types";
 
 // Fenêtre de contexte effective d'un modèle. Fonctions pures (testées dans tests/unit/context.test.ts).
 //
-// Ollama charge chaque modèle avec num_ctx = 4096 par défaut, quelle que soit la longueur maximale annoncée
-// par /api/show (32 768 pour qwen2.5:3b) : au-delà, il tronque silencieusement le DÉBUT du prompt.
-// L'application envoie donc toujours num_ctx explicitement, ce qui rend la fenêtre connue et réelle.
+// Ollama charge chaque modèle avec num_ctx = 4096 par défaut si aucune valeur n'est fournie.
+// Quand /api/show annonce la fenêtre réelle du modèle, on l'utilise et on l'envoie explicitement.
 // Les serveurs compatibles OpenAI fixent la fenêtre au chargement du modèle : on ne peut que la lire
 // (quand ils l'exposent) ou la faire renseigner par l'administration.
 
@@ -37,10 +36,8 @@ export function resolveWindow(opts: {
   if (opts.override) {
     window = opts.override.contextWindow;
     source = "manual";
-  } else if (opts.providerKind === "OLLAMA") {
-    window = Math.min(opts.appDefaultWindow, providerMax ?? Infinity);
-    source = "app-default";
   } else if (providerMax) {
+    // La capacité annoncée par le fournisseur est la donnée réelle disponible pour ce modèle.
     window = providerMax;
     source = "provider";
   } else {

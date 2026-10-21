@@ -178,14 +178,13 @@ describe("Scénario 1 — question récente : recherche automatique, étapes ré
   });
 });
 
-describe("Scénario 2 — question simple : aucune recherche", () => {
-  it("répond normalement sans appeler le moteur", async () => {
+describe("Scénario 2 — contrôle de recherche Web", () => {
+  it("recherche systématiquement quand le contrôle est actif", async () => {
     state.script = answer("391.");
     const events = await send("Combien font 17 fois 23 ?");
-    expect(of(events, "research_start")).toHaveLength(0);
-    expect(state.searches).toHaveLength(0);
-    expect(state.requests[0].messages.at(-1)!.content).toBe("Combien font 17 fois 23 ?");
-    expect(await db.webSearch.count()).toBe(0);
+    expect(of(events, "research_start")[0]).toMatchObject({ mode: "auto", reason: "Recherche Web activée pour cette conversation." });
+    expect(state.searches.length).toBeGreaterThan(0);
+    expect(await db.webSearch.count()).toBe(1);
   });
   it("aucune recherche quand le contrôle de la conversation est désactivé", async () => {
     state.script = answer("Je ne peux pas vérifier.");

@@ -50,7 +50,7 @@ export function ContextSettingsView({ initial }: { initial: ContextAdminView }) 
         title="Fenêtre de contexte"
         description={
           ollama
-            ? "Ollama charge les modèles avec une fenêtre de 4 096 tokens si on ne lui en impose pas une, et tronque silencieusement le début du prompt au-delà. L'application envoie donc toujours la fenêtre ci-dessous (num_ctx), plafonnée au maximum du modèle. Une fenêtre plus grande consomme davantage de mémoire vidéo."
+            ? "La fenêtre annoncée par Ollama est utilisée automatiquement et envoyée au modèle (num_ctx). Le réglage par défaut ci-dessous sert uniquement si Ollama ne fournit pas cette information ; un réglage manuel par modèle reste prioritaire. Une fenêtre plus grande consomme davantage de mémoire vidéo."
             : "Les serveurs compatibles OpenAI fixent la fenêtre au chargement du modèle. Elle est lue quand le serveur l'annonce ; sinon la valeur par défaut ci-dessous est supposée : renseignez la fenêtre réelle de chaque modèle plus bas."
         }
       >

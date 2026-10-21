@@ -23,7 +23,9 @@ const schema = z.object({
   IATRANO_IN_DOCKER: boolish.default("false"),
   // Recherche Web (valeurs par défaut ; l'administration peut les remplacer)
   SEARCH_PROVIDER: z.enum(["searxng", "brave"]).default("searxng"),
-  SEARXNG_URL: z.string().optional(),
+  // En développement hors Docker, compose.dev.yaml expose SearXNG sur 8888.
+  // La valeur reste surchargeable par .env ou par la configuration administrateur.
+  SEARXNG_URL: z.string().default("http://localhost:8888"),
   BRAVE_SEARCH_API_KEY: z.string().optional(),
 });
 

@@ -6,6 +6,8 @@ import { BraveProvider } from "./brave";
 import { SearxngProvider } from "./searxng";
 import { SearchError, type SearchProvider, type SearchProviderKind } from "./types";
 
+export const DEFAULT_SEARXNG_URL = "http://localhost:8888";
+
 export const SEARCH_PROVIDER_LABELS: Record<SearchProviderKind, string> = {
   SEARXNG: "SearXNG (auto-hébergé)",
   BRAVE: "Brave Search API",
@@ -22,7 +24,7 @@ export function searchConfigFrom(s: Pick<AppSettings, "searchProvider" | "searxn
   const e = env();
   return {
     kind: s.searchProvider,
-    searxngUrl: s.searxngUrl || e.SEARXNG_URL || null,
+    searxngUrl: s.searxngUrl || e.SEARXNG_URL || DEFAULT_SEARXNG_URL,
     braveApiKey: s.braveApiKey || e.BRAVE_SEARCH_API_KEY || null,
   };
 }

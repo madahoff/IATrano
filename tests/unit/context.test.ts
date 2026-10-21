@@ -29,10 +29,13 @@ describe("comptage des tokens", () => {
 
 describe("fenêtre effective", () => {
   const base = { appDefaultWindow: 8192, appReserve: 1024 };
-  it("Ollama : fenêtre par défaut imposée (num_ctx), plafonnée au maximum du modèle", () => {
+  it("Ollama : utilise la fenêtre réellement annoncée par le modèle", () => {
     const w = resolveWindow({ ...base, providerKind: "OLLAMA", providerMax: 32768, override: null });
-    expect(w).toMatchObject({ window: 8192, reserve: 1024, capacity: 7168, source: "app-default", numCtx: 8192 });
+    expect(w).toMatchObject({ window: 32768, reserve: 1024, capacity: 31744, source: "provider", numCtx: 32768 });
     expect(resolveWindow({ ...base, providerKind: "OLLAMA", providerMax: 4096, override: null }).window).toBe(4096);
+  });
+  it("utilise le réglage global si le fournisseur ne donne pas sa fenêtre", () => {
+    expect(resolveWindow({ ...base, providerKind: "OLLAMA", providerMax: null, override: null })).toMatchObject({ window: 8192, source: "assumed", numCtx: 8192 });
   });
   it("réglage manuel prioritaire, avec sa propre réserve", () => {
     const w = resolveWindow({ ...base, providerKind: "OLLAMA", providerMax: 32768, override: { contextWindow: 16384, responseReserve: 2048 } });

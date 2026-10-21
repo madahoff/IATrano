@@ -114,7 +114,7 @@ tests/integration       tests sur une vraie base PostgreSQL + tests optionnels c
 ```bash
 pnpm install
 cp .env.example .env            # puis éditez .env (voir ci-dessous)
-pnpm db:up                      # PostgreSQL de développement (compose.dev.yaml, port 127.0.0.1:5442)
+pnpm db:up                      # PostgreSQL + SearXNG de développement (ports 5442 et 8888)
 pnpm db:deploy                  # applique les migrations
 pnpm dev                        # http://localhost:3000
 ```
@@ -174,7 +174,7 @@ Avec LM Studio ou llama.cpp, choisissez le type **Compatible OpenAI** et l'adres
 | `APP_PORT`, `APP_BIND` | non | Port et interface publiés par Docker Compose (`3000`, `0.0.0.0`). |
 | `NODE_VERSION` | non | Image Node du build Docker (`22-alpine` par défaut). |
 | `SEARCH_PROVIDER` | non | `searxng` (défaut) ou `brave`. Valeur initiale, modifiable dans l'administration. |
-| `SEARXNG_URL` | non | Adresse de SearXNG vue depuis le serveur (`http://searxng:8080` en Compose). Utilisée si le champ de l'administration est vide. |
+| `SEARXNG_URL` | non | Adresse de SearXNG vue depuis le serveur (`http://searxng:8080` en Compose, `http://localhost:8888` avec `compose.dev.yaml`). Utilisée si le champ de l'administration est vide. |
 | `SEARXNG_SECRET` | oui (Docker) | Secret interne du service `searxng` (`openssl rand -hex 32`). |
 | `SEARXNG_IMAGE` | non | Image SearXNG (`searxng/searxng:latest` ; épinglez une version en production). |
 | `BRAVE_SEARCH_API_KEY` | non | Clé Brave Search si `SEARCH_PROVIDER=brave` (jamais envoyée au navigateur). |
@@ -391,7 +391,7 @@ Ajouter un moteur : implémenter `SearchProvider` (une méthode `search`) et l'e
 
 **Repli si le moteur est indisponible** (non configuré, injoignable, 403, quota) : le panneau affiche l'échec, un avis explique que la réponse n'utilise aucune source Web, le modèle est prévenu de ne pas prétendre avoir cherché, et toute référence `[n]` est retirée.
 
-### SearXNG en local (hors Docker)
+### SearXNG en local (développement)
 
 ```bash
 git clone --depth 1 https://github.com/searxng/searxng.git && cd searxng
@@ -399,6 +399,8 @@ python3 -m venv .venv && .venv/bin/pip install -U pip setuptools wheel pyyaml ms
 .venv/bin/pip install --use-pep517 --no-build-isolation -e .
 sed 's/port: 8080/port: 8888/; s/bind_address: "0.0.0.0"/bind_address: "127.0.0.1"/' ../IATrano/searxng/settings.yml > settings.local.yml
 SEARXNG_SETTINGS_PATH=$PWD/settings.local.yml SEARXNG_SECRET=$(openssl rand -hex 16) .venv/bin/python -m searx.webapp
+# compose.dev.yaml démarre SearXNG sur http://localhost:8888
+docker compose -f compose.dev.yaml up -d
 # puis SEARXNG_URL=http://localhost:8888 dans .env (ou dans l'administration)
 ```
 

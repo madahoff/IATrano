@@ -350,7 +350,18 @@ async function researchPhase(opts: {
   if (!app.webSearchEnabled || !prepared.conversation.webSearch || !opts.question.trim()) return null;
   const previous = prepared.history.filter((m) => m.role === "ASSISTANT").at(-1);
   const previousUsedSearch = previous ? (await db.webSearch.count({ where: { messageId: previous.id, status: "DONE" } })) > 0 : false;
-  const decision = decideSearch(opts.question, { previousUsedSearch });
+  const automaticDecision = decideSearch(opts.question, { previousUsedSearch });
+  // Le contrôle Recherche Web est une commande explicite de l'utilisateur :
+  // activé, il force une recherche même pour une question simple ou du code ;
+  // désactivé, le retour ci-dessus empêche toute recherche.
+  const decision = automaticDecision.search
+    ? automaticDecision
+    : {
+        search: true as const,
+        mode: "auto" as const,
+        reason: "Recherche Web activée pour cette conversation.",
+        timeSensitive: false,
+      };
   if (!decision.search) return null;
 
   const startedAt = Date.now();

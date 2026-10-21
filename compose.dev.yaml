@@ -1,8 +1,26 @@
 name: iatrano-dev
 
-# PostgreSQL seul, pour le développement local avec `pnpm dev`.
+# PostgreSQL et SearXNG pour le développement local avec `pnpm dev`.
 #   docker compose -f compose.dev.yaml up -d
 services:
+  # SearXNG utilisé par la recherche Web quand l'application tourne avec `pnpm dev`.
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: dev-only-change-me
+      SEARXNG_BASE_URL: http://localhost:8888/
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
   db:
     image: postgres:17-alpine
     restart: unless-stopped

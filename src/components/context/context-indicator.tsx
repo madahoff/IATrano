@@ -156,13 +156,14 @@ function Details(props: Props & { onShowSummary: () => void }) {
         <div className="min-w-0">
           <p className="text-lg leading-tight font-semibold tabular-nums">{Math.round(view.percent)} %</p>
           <p className="text-xs text-muted-foreground">
-            {view.live ? "Génération en cours — prompt envoyé + réponse en cours (estimation)" : "Estimation du prompt de la prochaine réponse"}
+            {view.live ? "Génération en cours — mesure du serveur IA" : usage.lastRequest?.promptTokens ? "Dernière mesure réelle · prochain prompt estimé" : "Prochain prompt estimé avant le premier appel"}
           </p>
         </div>
       </div>
 
       <dl className="flex flex-col">
         <Row label="Contexte utilisé" value={`≈ ${fmt(view.used)} tokens`} />
+        {usage.lastRequest?.promptTokens && <Row label="Dernier prompt mesuré" value={`${fmt(usage.lastRequest.promptTokens)} tokens`} hint="mesure renvoyée par le serveur IA" />}
         <Row label="Contexte restant" value={remaining >= 0 ? `≈ ${fmt(remaining)} tokens` : <span className="text-destructive">dépassé de {fmt(-remaining)}</span>} />
         <Row
           label="Capacité effective"

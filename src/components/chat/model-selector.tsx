@@ -29,9 +29,11 @@ export function ModelSelector({ value, onChange, disabled }: { value: string | n
           disabled={disabled}
           className={cn("h-9 max-w-[min(60vw,22rem)] gap-1.5 px-3 text-[0.95rem] font-semibold", (unavailable || (models && !reachable)) && "text-warning-foreground")}
           aria-label="Sélectionner le modèle"
+          title={current ? `${current.name} · ${current.provider === "OLLAMA" ? "Ollama" : "Compatible OpenAI"}${current.contextLength ? ` · contexte ${current.contextLength.toLocaleString("fr-FR")} tokens` : ""}` : undefined}
         >
           {(unavailable || (models && !reachable)) && <AlertTriangle className="text-warning" />}
           <span className="truncate">{label}</span>
+          {current?.contextLength && <span className="hidden shrink-0 text-xs font-normal text-muted-foreground sm:inline">{(current.contextLength / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })}k ctx</span>}
           <ChevronDown className="text-muted-foreground" />
         </Button>
       </PopoverTrigger>

@@ -1,0 +1,162 @@
+// Schéma de données IATrano.
+// Les migrations sont dans prisma/migrations (pnpm db:migrate en dev, pnpm db:deploy en prod).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPERADMIN
+  ADMIN
+  USER
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+enum MessageStatus {
+  STREAMING
+  COMPLETE
+  CANCELLED
+  ERROR
+}
+
+enum ProviderType {
+  OLLAMA
+  OPENAI_COMPATIBLE
+}
+
+enum ThemePreference {
+  SYSTEM
+  LIGHT
+  DARK
+}
+
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         Role      @default(USER)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions      Session[]
+  conversations Conversation[]
+  settings      UserSettings?
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  // Seul le hash SHA-256 du jeton est stocké : une fuite de la base ne permet pas d'usurper une session.
+  tokenHash  String   @unique
+  userId     String
+  expiresAt  DateTime
+  lastUsedAt DateTime @default(now())
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model UserSettings {
+  userId                String          @id
+  // null = hériter du paramètre global de l'application
+  defaultModel          String?
+  thinkingDefault       Boolean?
+  clarificationsEnabled Boolean?
+  theme                 ThemePreference @default(SYSTEM)
+  updatedAt             DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Configuration globale : une seule ligne (id = 1).
+model AppSettings {
+  id                    Int          @id @default(1)
+  providerType          ProviderType @default(OLLAMA)
+  baseUrl               String       @default("http://localhost:11434")
+  // Clé optionnelle pour les serveurs compatibles OpenAI protégés. Jamais renvoyée au navigateur.
+  apiKey                String?
+  defaultModel          String?
+  thinkingDefault       Boolean      @default(false)
+  clarificationsEnabled Boolean      @default(true)
+  systemPrompt          String?
+  requestTimeoutMs      Int          @default(120000)
+  updatedAt             DateTime     @updatedAt
+  updatedById           String?
+}
+
+model Conversation {
+  id             String    @id @default(cuid())
+  userId         String
+  title          String?
+  titleGenerated Boolean   @default(false)
+  model          String?
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId, archivedAt, updatedAt(sort: Desc)])
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Conversation_title_trgm_idx")
+}
+
+model Message {
+  id              String        @id @default(cuid())
+  conversationId  String
+  role            MessageRole
+  content         String        @default("")
+  // Raisonnement renvoyé séparément par le fournisseur (jamais simulé).
+  thinking        String?
+  thinkingEnabled Boolean       @default(false)
+  // Demande de précisions validée côté serveur : { questions: [{ question, options[] }] }
+  clarification   Json?
+  model           String?
+  provider        ProviderType?
+  status          MessageStatus @default(COMPLETE)
+  error           String?
+  durationMs      Int?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([content(ops: raw("gin_trgm_ops"))], type: Gin, map: "Message_content_trgm_idx")
+}
+
+model ErrorLog {
+  id        String   @id @default(cuid())
+  level     LogLevel @default(ERROR)
+  source    String
+  message   String
+  details   Json?
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@index([level, createdAt(sort: Desc)])
+}

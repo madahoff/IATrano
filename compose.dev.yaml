@@ -1,0 +1,24 @@
+name: iatrano-dev
+
+# PostgreSQL seul, pour le développement local avec `pnpm dev`.
+#   docker compose -f compose.dev.yaml up -d
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: iatrano
+      POSTGRES_PASSWORD: iatrano
+      POSTGRES_DB: iatrano
+    ports:
+      - "127.0.0.1:${DEV_DB_PORT:-5442}:5432"
+    volumes:
+      - iatrano-dev-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iatrano -d iatrano"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  iatrano-dev-db:

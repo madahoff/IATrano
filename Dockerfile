@@ -18,7 +18,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 # --- Build Next.js
 FROM deps AS builder
 COPY . .
-RUN pnpm prisma generate && pnpm build
+# public/ peut être absent du dépôt (Git ne versionne pas les dossiers vides) : on le garantit.
+RUN mkdir -p public && pnpm prisma generate && pnpm build
 
 # --- Migrations : `prisma migrate deploy` (n'applique que les migrations en attente, jamais de reset)
 FROM deps AS migrator

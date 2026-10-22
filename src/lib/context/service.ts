@@ -11,6 +11,8 @@ import { getMemorySettings } from "@/lib/memory/service";
 import { memoryBudget, memoryLine, selectMemories } from "@/lib/memory/select";
 import { getEffectivePreferences } from "@/lib/settings/service";
 import { assembleContext, type AssembledContext } from "./assemble";
+import { countMessagesTokens } from "@/lib/llm/tokens";
+import { getProjectPromptContext, projectDocumentBlock } from "@/lib/projects/service";
 import { splitForCompaction } from "./policy";
 import type { SourceRef } from "./summary";
 import { contextState, type ContextUsageDTO, type StoredRequestUsage, type SummaryDTO, type SummarySections } from "./types";
@@ -111,7 +113,7 @@ export type ActiveContext = {
  */
 export async function buildActiveContext(opts: {
   userId: string;
-  conversation: Pick<Conversation, "id"> | null;
+  conversation: (Pick<Conversation, "id"> & { projectId?: string | null }) | null;
   history: Message[];
   modelId: string;
   modelInfo?: ModelInfo | null;
@@ -128,6 +130,7 @@ export async function buildActiveContext(opts: {
     opts.conversation ? resolveActiveSummary(opts.conversation.id) : Promise.resolve(null),
     getMemorySettings(opts.userId),
   ]);
+  const project = await getProjectPromptContext(opts.userId, opts.conversation?.projectId, opts.query, window.capacity);
   const after = summary ? opts.history.filter((m) => m.createdAt > summary.coveredUntil) : opts.history;
 
   let injected: ActiveContext["injected"] = [];
@@ -138,13 +141,20 @@ export async function buildActiveContext(opts: {
   }
 
   const assembled = assembleContext({
-    systemPrompt: app.systemPrompt,
+    systemPrompt: [app.systemPrompt, project.instructions ? `INSTRUCTIONS DU PROJET :\n${project.instructions}` : "", project.memories.length ? `MÉMOIRE PARTAGÉE DU PROJET :\n${project.memories.map((m) => `- ${m}`).join("\n")}` : ""].filter(Boolean).join("\n\n"),
     clarifications: opts.clarifications ?? prefs.clarificationsEnabled,
     memoryLines: injected.map((m) => m.content),
     summaryText: opts.summaryTextOverride ?? summary?.text,
     history: toHistory(after),
     capacity: window.capacity,
   });
+  const projectDocs = projectDocumentBlock(project.documents);
+  if (projectDocs && assembled.messages.at(-1)?.role === "user") {
+    assembled.messages[assembled.messages.length - 1] = { role: "user", content: `${projectDocs}\n\n${assembled.messages.at(-1)!.content}` };
+    const before = assembled.total;
+    assembled.total = countMessagesTokens(assembled.messages);
+    assembled.parts.rag += Math.max(0, assembled.total - before);
+  }
   return {
     app,
     window,

@@ -19,6 +19,7 @@ const patchSchema = z
     archived: z.boolean().optional(),
     model: z.string().min(1).max(200).optional(),
     webSearch: z.boolean().optional(),
+    projectId: z.string().min(1).nullable().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, "Aucune modification.");
 

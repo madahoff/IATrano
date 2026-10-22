@@ -19,6 +19,7 @@ const schema = z.object({
   model: z.string().min(1, "Aucun modèle sélectionné.").max(200),
   thinking: z.boolean().default(false),
   webSearch: z.boolean().optional(),
+  projectId: z.string().min(1).nullable().optional(),
 });
 
 export const POST = route(async (req) => {

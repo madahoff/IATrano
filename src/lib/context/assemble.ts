@@ -78,7 +78,7 @@ export function assembleContext(opts: {
 export function finalizeContext(messages: ChatMessage[], assembled: AssembledContext, capacity: number) {
   const out = [...messages];
   let total = countMessagesTokens(out);
-  const parts = { ...assembled.parts, rag: Math.max(0, total - assembled.total) };
+  const parts = { ...assembled.parts, rag: assembled.parts.rag + Math.max(0, total - assembled.total) };
   let dropped = assembled.droppedMessages;
   while (total > capacity && out.length > 2) {
     const removed = out.splice(1, 1)[0];

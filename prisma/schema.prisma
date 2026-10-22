@@ -82,6 +82,29 @@ enum CompactionStatus {
   FAILED
 }
 
+enum ProjectDocumentStatus {
+  PENDING
+  PROCESSING
+  READY
+  ERROR
+}
+
+enum ProjectMemoryKind {
+  OBJECTIVE
+  CONSTRAINT
+  DECISION
+  FACT
+  DEFINITION
+  CONCLUSION
+  OTHER
+}
+
+enum ProjectMemorySource {
+  USER
+  DOCUMENT
+  AI
+}
+
 enum LogLevel {
   INFO
   WARN
@@ -103,6 +126,7 @@ model User {
   conversations Conversation[]
   settings      UserSettings?
   memories      Memory[]
+  projects      Project[]
 }
 
 model Session {
@@ -191,6 +215,7 @@ model Conversation {
   model          String?
   // État du contrôle « Recherche Web automatique » de cette conversation (fixé à la création).
   webSearch      Boolean   @default(true)
+  projectId      String?
   archivedAt     DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -204,6 +229,7 @@ model Conversation {
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  Message[]
   summaries ContextSummary[]
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([userId, archivedAt, updatedAt(sort: Desc)])
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Conversation_title_trgm_idx")
@@ -238,6 +264,81 @@ model Message {
 
   @@index([conversationId, createdAt])
   @@index([content(ops: raw("gin_trgm_ops"))], type: Gin, map: "Message_content_trgm_idx")
+}
+
+model Project {
+  id                 String   @id @default(cuid())
+  userId             String
+  name               String
+  description        String?
+  instructions       String?
+  memoryEnabled      Boolean  @default(true)
+  documentsEnabled   Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  documents    ProjectDocument[]
+  memories     ProjectMemory[]
+
+  @@unique([userId, name])
+  @@index([userId, updatedAt(sort: Desc)])
+}
+
+model ProjectDocument {
+  id           String               @id @default(cuid())
+  projectId    String
+  name         String
+  mimeType     String
+  sizeBytes    Int
+  checksum     String
+  status       ProjectDocumentStatus @default(PENDING)
+  error        String?
+  contentText  String?              @db.Text
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  project Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chunks  ProjectDocumentChunk[]
+  memories ProjectMemory[]
+
+  @@unique([projectId, checksum])
+  @@index([projectId, status, updatedAt(sort: Desc)])
+}
+
+model ProjectDocumentChunk {
+  id         String   @id @default(cuid())
+  documentId String
+  ordinal    Int
+  content    String   @db.Text
+  tokenCount Int
+  page       Int?
+  createdAt  DateTime @default(now())
+
+  document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, ordinal])
+  @@index([documentId])
+}
+
+model ProjectMemory {
+  id             String             @id @default(cuid())
+  projectId      String
+  content        String             @db.Text
+  kind           ProjectMemoryKind
+  source         ProjectMemorySource
+  sourceDocumentId String?
+  sourceConversationId String?
+  confidence     Float?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  project  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document ProjectDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, kind, updatedAt(sort: Desc)])
+  @@index([sourceDocumentId])
 }
 
 // Trace d'une recherche Web associée à UNE réponse (supprimée avec elle).

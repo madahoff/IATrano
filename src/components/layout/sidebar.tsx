@@ -15,6 +15,7 @@ import {
   SquarePen,
   Trash2,
   X,
+  FolderKanban,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -125,6 +126,9 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
         >
           <SquarePen />
           Nouvelle conversation
+        </Button>
+        <Button variant="ghost" className="h-10 justify-start gap-2.5 px-3 hover:bg-sidebar-accent" asChild>
+          <Link href="/projects" onClick={() => onClose?.()}><FolderKanban /> Projets</Link>
         </Button>
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />

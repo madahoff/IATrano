@@ -27,6 +27,7 @@ import { runResearch, type PipelineResult } from "@/lib/search/pipeline";
 import { buildRagUserMessage, NO_SEARCH_NOTICE, RAG_INSTRUCTIONS } from "@/lib/search/rag-prompt";
 import type { ResearchStep } from "@/lib/search/research-types";
 import { validateCitations } from "./citations";
+import { getOwnedProject } from "@/lib/projects/service";
 import type { ChatRequestBody, StreamEvent } from "./protocol";
 
 type Emit = (event: StreamEvent) => void;
@@ -54,12 +55,13 @@ export async function prepareGeneration(
   if (body.action === "send") {
     const content = body.content?.trim();
     if (!content) throw badRequest("Le message est vide.");
+    const projectId = body.projectId ? (await getOwnedProject(userId, body.projectId)).id : null;
     if (body.conversationId) {
       const found = await db.conversation.findFirst({ where: { id: body.conversationId, userId } });
       if (!found) throw notFound("Conversation introuvable.");
       conversation = found;
     } else {
-      conversation = await db.conversation.create({ data: { userId, title: fallbackTitle(content), model, webSearch: body.webSearch ?? webSearchDefault } });
+      conversation = await db.conversation.create({ data: { userId, title: fallbackTitle(content), model, webSearch: body.webSearch ?? webSearchDefault, projectId } });
     }
     userMessage = await db.message.create({ data: { conversationId: conversation.id, role: "USER", content } });
   } else {
@@ -100,9 +102,10 @@ export async function prepareGeneration(
     },
   });
   // Le contrôle « Recherche Web » envoyé avec le message devient l'état persistant de la conversation.
+  if (body.projectId) await getOwnedProject(userId, body.projectId);
   conversation = await db.conversation.update({
     where: { id: conversation.id },
-    data: { model, updatedAt: new Date(), ...(body.webSearch !== undefined ? { webSearch: body.webSearch } : {}) },
+    data: { model, updatedAt: new Date(), ...(body.webSearch !== undefined ? { webSearch: body.webSearch } : {}), ...(body.projectId !== undefined ? { projectId: body.projectId } : {}) },
   });
   return { conversation, userMessage, assistantMessage, history, isFirstExchange: history.length === 1 };
 }
@@ -206,7 +209,11 @@ export async function runGeneration(opts: {
   if (web) {
     messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${rag ? RAG_INSTRUCTIONS : web.result.status === "failed" ? NO_SEARCH_NOTICE : NO_RESULTS_NOTICE}` };
     const last = messages.at(-1);
-    if (rag && last?.role === "user") messages[messages.length - 1] = { role: "user", content: buildRagUserMessage(question, rag, new Date()) };
+    if (rag && last?.role === "user") {
+      const projectBlock = last.content.match(/^<project_documents>[\s\S]*?<\/project_documents>/)?.[0];
+      const projectContext = projectBlock ? `${projectBlock}\n\n` : "";
+      messages[messages.length - 1] = { role: "user", content: `${projectContext}${buildRagUserMessage(question, rag, new Date())}` };
+    }
   }
 
   // Ajustement final au budget, documents Web compris : c'est ce prompt-là qui est envoyé et mesuré.

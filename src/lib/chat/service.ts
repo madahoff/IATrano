@@ -59,12 +59,13 @@ export function toMessageDTO(m: Message & { webSearch?: WebSearch | null }): Mes
   };
 }
 
-export function toSummary(c: Pick<Conversation, "id" | "title" | "model" | "webSearch" | "archivedAt" | "updatedAt">, snippet?: string): ConversationSummary {
+export function toSummary(c: Pick<Conversation, "id" | "title" | "model" | "webSearch" | "projectId" | "archivedAt" | "updatedAt">, snippet?: string): ConversationSummary {
   return {
     id: c.id,
     title: c.title ?? "Nouvelle conversation",
     model: c.model,
     webSearch: c.webSearch,
+    projectId: c.projectId,
     archived: Boolean(c.archivedAt),
     updatedAt: c.updatedAt.toISOString(),
     snippet,
@@ -116,7 +117,7 @@ export async function listConversations(
     where,
     orderBy: { updatedAt: "desc" },
     take: limit,
-    select: { id: true, title: true, model: true, webSearch: true, archivedAt: true, updatedAt: true },
+    select: { id: true, title: true, model: true, webSearch: true, projectId: true, archivedAt: true, updatedAt: true },
   });
   if (!q || convs.length === 0) return convs.map((c) => toSummary(c));
   const hits = await db.message.findMany({
@@ -132,7 +133,7 @@ export async function listConversations(
 export async function updateConversation(
   userId: string,
   id: string,
-  data: { title?: string; archived?: boolean; model?: string; webSearch?: boolean },
+  data: { title?: string; archived?: boolean; model?: string; webSearch?: boolean; projectId?: string | null },
 ) {
   await getOwnedConversation(userId, id);
   const updated = await db.conversation.update({
@@ -142,6 +143,7 @@ export async function updateConversation(
       ...(data.archived !== undefined ? { archivedAt: data.archived ? new Date() : null } : {}),
       ...(data.model !== undefined ? { model: data.model } : {}),
       ...(data.webSearch !== undefined ? { webSearch: data.webSearch } : {}),
+      ...(data.projectId !== undefined ? { projectId: data.projectId } : {}),
     },
   });
   return toSummary(updated);

@@ -262,8 +262,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const send = useCallback(
-    (content: string, model: string, thinking: boolean, webSearch: boolean) =>
-      run({ action: "send", conversationId: convRef.current ?? undefined, content, model, thinking, webSearch }, (prev) => [
+    (content: string, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null) =>
+      run({ action: "send", conversationId: convRef.current ?? undefined, content, model, thinking, webSearch, projectId }, (prev) => [
         ...prev,
         {
           id: tempId("u"),
@@ -286,8 +286,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const regenerate = useCallback(
-    (assistantMessageId: string | undefined, model: string, thinking: boolean, webSearch: boolean) =>
-      run({ action: "regenerate", conversationId: convRef.current ?? undefined, messageId: assistantMessageId, model, thinking, webSearch }, (prev) => {
+    (assistantMessageId: string | undefined, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null) =>
+      run({ action: "regenerate", conversationId: convRef.current ?? undefined, messageId: assistantMessageId, model, thinking, webSearch, projectId }, (prev) => {
         const idx = assistantMessageId ? prev.findIndex((m) => m.id === assistantMessageId) : prev.findLastIndex((m) => m.role === "ASSISTANT");
         const kept = idx >= 0 ? prev.slice(0, idx) : prev;
         return [...kept, emptyAssistant(model, thinking)];
@@ -296,8 +296,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const edit = useCallback(
-    (userMessageId: string, content: string, model: string, thinking: boolean, webSearch: boolean) =>
-      run({ action: "edit", conversationId: convRef.current ?? undefined, messageId: userMessageId, content, model, thinking, webSearch }, (prev) => {
+    (userMessageId: string, content: string, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null) =>
+      run({ action: "edit", conversationId: convRef.current ?? undefined, messageId: userMessageId, content, model, thinking, webSearch, projectId }, (prev) => {
         const idx = prev.findIndex((m) => m.id === userMessageId);
         const kept = prev.slice(0, idx + 1).map((m) => (m.id === userMessageId ? { ...m, content } : m));
         return [...kept, emptyAssistant(model, thinking)];

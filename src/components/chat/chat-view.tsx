@@ -20,7 +20,7 @@ import { useChat } from "./use-chat";
 import { ContextBanner, ContextIndicator } from "@/components/context/context-indicator";
 import { contextView, useContextUsage } from "@/components/context/use-context-usage";
 
-type InitialConversation = { id: string; title: string; model: string | null; webSearch: boolean; messages: MessageDTO[] } | null;
+type InitialConversation = { id?: string; title?: string; model?: string | null; webSearch?: boolean; projectId?: string | null; messages?: MessageDTO[] } | null;
 
 export function ChatView({ conversation }: { conversation: InitialConversation }) {
   const { models, upsertConversation, startNewChat } = useApp();
@@ -113,32 +113,33 @@ export function ChatView({ conversation }: { conversation: InitialConversation }
     return true;
   };
 
+  const projectId = conversation?.projectId ?? null;
   const send = useCallback(
     (text: string) => {
       if (!ensureReady()) return;
       setStick(true);
-      void chat.send(text, model!, thinkingActive, webSearch);
+      void chat.send(text, model!, thinkingActive, webSearch, projectId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chat.send, model, thinkingActive, webSearch, blockedReason],
+    [chat.send, model, thinkingActive, webSearch, projectId, blockedReason],
   );
   const regenerate = useCallback(
     (id: string) => {
       if (!ensureReady()) return;
       setStick(true);
-      void chat.regenerate(id, model!, thinkingActive, webSearch);
+      void chat.regenerate(id, model!, thinkingActive, webSearch, projectId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chat.regenerate, model, thinkingActive, webSearch, blockedReason],
+    [chat.regenerate, model, thinkingActive, webSearch, projectId, blockedReason],
   );
   const edit = useCallback(
     (id: string, content: string) => {
       if (!ensureReady()) return;
       setStick(true);
-      void chat.edit(id, content, model!, thinkingActive, webSearch);
+      void chat.edit(id, content, model!, thinkingActive, webSearch, projectId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chat.edit, model, thinkingActive, webSearch, blockedReason],
+    [chat.edit, model, thinkingActive, webSearch, projectId, blockedReason],
   );
 
   // --- Défilement : reste collé en bas tant que l'utilisateur n'est pas remonté.

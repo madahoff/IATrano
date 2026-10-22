@@ -86,6 +86,7 @@ export type ChatRequestBody = {
   thinking: boolean;
   /** État du contrôle « Recherche Web » de la conversation au moment de l'envoi. */
   webSearch?: boolean;
+  projectId?: string | null;
 };
 
 export type MessageDTO = {
@@ -108,6 +109,7 @@ export type ConversationSummary = {
   title: string;
   model: string | null;
   webSearch: boolean;
+  projectId?: string | null;
   archived: boolean;
   updatedAt: string;
   snippet?: string;

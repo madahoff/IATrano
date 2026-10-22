@@ -4,6 +4,7 @@ import { researchEventSchema, type ResearchDTO, type ResearchEvent } from "@/lib
 import type { RoutingMode } from "@/lib/routing/config";
 import type { ConfirmationChoice, RoutingSnapshot } from "@/lib/routing/decide";
 import type { ArtifactRef } from "@/lib/artifacts/types";
+import type { CitationCheckDTO, DocumentRetrievalDTO } from "@/lib/documents/types";
 
 export type Clarification = { questions: Array<{ question: string; options: string[] }> };
 
@@ -40,10 +41,18 @@ export type StreamEvent =
         | "context_truncated"
         | "jev_unavailable"
         | "artifact_missing"
-        | "artifact_invalid";
+        | "artifact_invalid"
+        | "documents_partial"
+        | "doc_citations_removed"
+        | "doc_citations_weak";
       message: string;
     }
   | ResearchEvent
+  /** Documents du projet : recherche en cours (étape affichée), puis passages transmis au modèle. */
+  | { type: "documents_step"; label: string }
+  | { type: "documents"; retrieval: DocumentRetrievalDTO }
+  /** Références [Dn] validées ; `content` remplace le texte reçu. */
+  | { type: "doc_citations"; content: string; cited: number[]; checks: CitationCheckDTO[]; removed: number }
   | { type: "done"; status: "COMPLETE" | "CANCELLED"; durationMs: number }
   | { type: "error"; code: string; message: string; hint?: string }
   | { type: "title"; conversationId: string; title: string }
@@ -56,7 +65,8 @@ export type ContextStreamEvent =
   // Mesure renvoyée par le fournisseur à la fin de la génération (null s'il ne la fournit pas).
   | { type: "context_measured"; promptTokens: number | null; completionTokens: number | null }
   | { type: "compaction"; status: "running" | "done" | "failed"; message?: string }
-  | { type: "memory"; saved: string[]; updated: string[]; removed: number; rejected: string[] };
+  // Mémoire persistante modifiée après la réponse (seulement en cas de changement réel ou de refus à signaler).
+  | { type: "memory"; saved: string[]; updated: string[]; removed: number; rejected: string[]; reinforced?: number };
 
 export function encodeEvent(event: StreamEvent): string {
   return `${JSON.stringify(event)}\n`;
@@ -107,6 +117,8 @@ export type ChatRequestBody = {
   routing?: { decisionId: string; choice?: ConfirmationChoice; accepted?: RoutingMode[] };
   /** Demande de modification de la page interactive ouverte (clé de l'artifact) : Qwen reçoit son code actuel. */
   artifactKey?: string;
+  /** Documents du projet interrogés par la conversation ([] : tous) ; enregistré sur la conversation. */
+  documentIds?: string[];
 };
 
 export type MessageDTO = {
@@ -124,6 +136,7 @@ export type MessageDTO = {
   research: ResearchDTO | null;
   routing: RoutingSnapshot | null;
   artifacts: ArtifactRef[];
+  documents: DocumentRetrievalDTO | null;
 };
 
 export type ConversationSummary = {
@@ -132,6 +145,7 @@ export type ConversationSummary = {
   model: string | null;
   webSearch: boolean;
   projectId?: string | null;
+  documentIds?: string[];
   archived: boolean;
   updatedAt: string;
   snippet?: string;

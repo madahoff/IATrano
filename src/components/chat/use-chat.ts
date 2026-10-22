@@ -35,6 +35,7 @@ function emptyAssistant(model: string, thinking: boolean): UIMessage {
     research: null,
     routing: null,
     artifacts: [],
+    documents: null,
   };
 }
 
@@ -64,6 +65,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   const [messages, setMessages] = useState<UIMessage[]>(() => initial.messages.map((m) => ({ ...m, notices: [] })));
   const [conversationId, setConversationId] = useState(initial.conversationId);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Dernière requête refusée avant tout démarrage (la conversation a été restaurée telle quelle).
+  const [requestFailed, setRequestFailed] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const cbRef = useRef(callbacks);
   useEffect(() => {
@@ -83,6 +86,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
       const ctrl = new AbortController();
       abortRef.current = ctrl;
       setIsStreaming(true);
+      setRequestFailed(false);
 
       const snapshot = messagesRef.current;
       const optimisticMessages = optimistic(snapshot);
@@ -127,6 +131,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
           // eslint-disable-next-line @next/next/no-location-assign-relative-destination
           if (res.status === 401) window.location.href = "/login";
           setMessages(snapshot);
+          setRequestFailed(true);
           toast.error(err.message);
           return false;
         }
@@ -265,6 +270,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
         } else if (!finished) {
           if (!started) {
             setMessages(snapshot);
+            setRequestFailed(true);
             toast.error("Connexion au serveur impossible. Vérifiez votre réseau.");
           } else {
             // Interruption réseau : le serveur conserve la partie déjà générée.
@@ -307,6 +313,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
           research: null,
           routing: null,
           artifacts: [],
+          documents: null,
         },
         emptyAssistant(model, thinking),
       ]),
@@ -343,5 +350,5 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
     setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, artifacts: [...m.artifacts.filter((a) => a.key !== ref.key), ref] } : m)));
   }, []);
 
-  return { messages, conversationId, isStreaming, send, regenerate, edit, stop, currentConversationId, upsertArtifactRef };
+  return { messages, conversationId, isStreaming, requestFailed, send, regenerate, edit, stop, currentConversationId, upsertArtifactRef };
 }

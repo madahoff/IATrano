@@ -2,7 +2,7 @@ import { computeVerdict, redactReport, skipped, type DiagnosticReport, type Diag
 import { tcpProbe as realTcpProbe, type TcpProbe } from "@/lib/diagnostics/tcp";
 import { createJevClient, JEV_DEFAULT_MODEL, JevError, type JevDecision } from "./client";
 import { jevBaseUrl, type JevProtocol } from "./config";
-import { DEFAULT_MODES, MODE_EMOJI, MODE_LABELS, ROUTING_MODES, ROUTING_SAMPLES, type ModesConfig } from "@/lib/routing/config";
+import { DEFAULT_MODES, MODE_LABELS, ROUTING_MODES, ROUTING_SAMPLES, type ModesConfig } from "@/lib/routing/config";
 
 // Test de connexion à JEV en 7 étapes. Chaque étape est indépendante et ne lève jamais d'exception :
 // un échec produit un message en français (cause probable + piste de correction).
@@ -215,7 +215,7 @@ export async function runJevDiagnostics(input: JevDiagnosticInput, deps: JevDiag
   // 6. Routage : une requête par message d'exemple, avec les trois questions de routage.
   s = performance.now();
   const modes = input.routingModes ?? DEFAULT_MODES;
-  const label = (m: (typeof ROUTING_MODES)[number]) => `${MODE_EMOJI[m]} ${MODE_LABELS[m]}`;
+  const label = (m: (typeof ROUTING_MODES)[number]) => MODE_LABELS[m];
   try {
     const lines: string[] = [];
     const warnings: string[] = [];

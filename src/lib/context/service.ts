@@ -7,7 +7,7 @@ import { getModels } from "@/lib/llm/discovery";
 import type { HistoryMessage } from "@/lib/llm/prompt";
 import { ESTIMATOR_LABEL } from "@/lib/llm/tokens";
 import type { ModelInfo } from "@/lib/llm/types";
-import { getMemorySettings } from "@/lib/memory/service";
+import { getMemorySettings, loadContextMemories } from "@/lib/memory/service";
 import { memoryBudget, memoryLine, selectMemories } from "@/lib/memory/select";
 import { getEffectivePreferences } from "@/lib/settings/service";
 import { assembleContext, type AssembledContext } from "./assemble";
@@ -104,7 +104,7 @@ export type ActiveContext = {
   summarized: number;
   memoryIds: string[];
   memoryEnabled: boolean;
-  injected: Array<{ id: string; kind: string; content: string }>;
+  injected: Array<{ id: string; kind: string; content: string; scope: "personal" | "project" }>;
 };
 
 /**
@@ -122,6 +122,8 @@ export async function buildActiveContext(opts: {
   clarifications?: boolean;
   /** Résumé à utiliser à la place du résumé actif (simulation de l'état après compaction). */
   summaryTextOverride?: string;
+  /** Passages des documents du projet retenus pour cette demande (voir src/lib/documents/retrieval). */
+  documentBlock?: string;
 }): Promise<ActiveContext> {
   const prefs = await getEffectivePreferences(opts.userId);
   const app = prefs.app;
@@ -130,25 +132,36 @@ export async function buildActiveContext(opts: {
     opts.conversation ? resolveActiveSummary(opts.conversation.id) : Promise.resolve(null),
     getMemorySettings(opts.userId),
   ]);
-  const project = await getProjectPromptContext(opts.userId, opts.conversation?.projectId, opts.query, window.capacity);
+  const project = await getProjectPromptContext(opts.userId, opts.conversation?.projectId);
   const after = summary ? opts.history.filter((m) => m.createdAt > summary.coveredUntil) : opts.history;
 
+  // Mémoire : personnelle (si l'utilisateur l'utilise) + celle du projet de la conversation (si le projet l'active).
+  // Seuls les souvenirs pertinents pour la demande entrent dans le budget ; les autres projets ne sont jamais lus.
+  const memoryProjectId = project.memoryEnabled ? (opts.conversation?.projectId ?? null) : null;
   let injected: ActiveContext["injected"] = [];
-  if (memSettings.enabled) {
-    const all = await db.memory.findMany({ where: { userId: opts.userId } });
+  if (memSettings.enabled || memoryProjectId) {
+    const all = await loadContextMemories(opts.userId, { personal: memSettings.enabled, projectId: memoryProjectId });
     const objective = (summary?.content as Partial<SummarySections> | null)?.objective ?? "";
-    injected = selectMemories(all, `${opts.query}\n${objective}`, memoryBudget(window.capacity)).map((m) => ({ id: m.id, kind: m.kind, content: memoryLine(m) }));
+    injected = selectMemories(all, `${opts.query}\n${objective}`, memoryBudget(window.capacity), { projectId: memoryProjectId }).map((m) => ({
+      id: m.id,
+      kind: m.kind,
+      content: memoryLine(m),
+      scope: m.projectId ? ("project" as const) : ("personal" as const),
+    }));
   }
 
   const assembled = assembleContext({
-    systemPrompt: [app.systemPrompt, project.instructions ? `INSTRUCTIONS DU PROJET :\n${project.instructions}` : "", project.memories.length ? `MÉMOIRE PARTAGÉE DU PROJET :\n${project.memories.map((m) => `- ${m}`).join("\n")}` : ""].filter(Boolean).join("\n\n"),
+    systemPrompt: [app.systemPrompt, project.instructions ? `INSTRUCTIONS DU PROJET :\n${project.instructions}` : ""].filter(Boolean).join("\n\n"),
     clarifications: opts.clarifications ?? prefs.clarificationsEnabled,
-    memoryLines: injected.map((m) => m.content),
+    memoryLines: injected.filter((m) => m.scope === "personal").map((m) => m.content),
+    projectMemoryLines: injected.filter((m) => m.scope === "project").map((m) => m.content),
+    projectName: project.name,
+    memoryActive: memSettings.enabled,
     summaryText: opts.summaryTextOverride ?? summary?.text,
     history: toHistory(after),
     capacity: window.capacity,
   });
-  const projectDocs = projectDocumentBlock(project.documents);
+  const projectDocs = opts.documentBlock ?? projectDocumentBlock(project.documents);
   if (projectDocs && assembled.messages.at(-1)?.role === "user") {
     assembled.messages[assembled.messages.length - 1] = { role: "user", content: `${projectDocs}\n\n${assembled.messages.at(-1)!.content}` };
     const before = assembled.total;

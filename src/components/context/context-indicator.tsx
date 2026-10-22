@@ -223,7 +223,7 @@ function Details(props: Props & { onShowSummary: () => void }) {
         </p>
         <p>
           Mémoire persistante :{" "}
-          {usage.memory.enabled ? `${usage.memory.injected.length} souvenir(s) pertinent(s) injecté(s)` : "désactivée"} ·{" "}
+          {memorySummary(usage.memory)} ·{" "}
           <Link href="/settings/memory" className="font-medium text-foreground underline underline-offset-4">
             Gérer
           </Link>
@@ -397,4 +397,12 @@ export function ContextBanner(props: { view: ContextView | null; usage: ContextU
       </div>
     </div>
   );
+}
+
+function memorySummary(memory: ContextUsageDTO["memory"]) {
+  const project = memory.injected.filter((m) => m.scope === "project").length;
+  const personal = memory.injected.length - project;
+  if (!memory.enabled && project === 0) return "désactivée";
+  const parts = [memory.enabled ? `${personal} souvenir(s) personnel(s)` : "", project ? `${project} du projet` : ""].filter(Boolean);
+  return `${parts.join(" et ")} pertinent(s) injecté(s)`;
 }

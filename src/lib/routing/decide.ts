@@ -123,12 +123,12 @@ export function decidedBy(outcomes: Outcomes): "jev" | "user" | "admin" | "fallb
   return "jev";
 }
 
-/** Libellé de proposition pour la carte : « 🧠 Réflexion approfondie (82 %) ». */
+/** Libellé de proposition pour la carte : « Réflexion approfondie (82 %) ». */
 export function proposalLabel(o: ModeOutcome): string {
   return `${MODE_LABELS[o.mode]}${o.p === null ? "" : ` (${pct(o.p)})`}`;
 }
 
-/** Instantané enregistré avec chaque réponse (étiquettes « 🧠 Réflexion · 🔍 Recherche » au-dessus du message). */
+/** Instantané enregistré avec chaque réponse (étiquettes « Réflexion · Recherche » au-dessus du message). */
 export type RoutingSnapshot = {
   authMode: AuthMode;
   /** JEV consulté mais injoignable : mode de repli appliqué. */

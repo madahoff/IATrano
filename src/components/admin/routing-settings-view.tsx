@@ -14,7 +14,6 @@ import {
   AUTH_MODE_HELP,
   AUTH_MODE_LABELS,
   AUTH_MODES,
-  MODE_EMOJI,
   MODE_LABELS,
   ROUTING_MODES,
   routingSettingsSchema,
@@ -25,6 +24,7 @@ import {
 } from "@/lib/routing/config";
 import { decideRouting, type Availability, type ModeOutcome } from "@/lib/routing/decide";
 import { cn } from "@/lib/utils";
+import { ModeIcon } from "@/components/chat/routing/mode-icon";
 
 const RULE_LABELS: Record<ModeRule, string> = { ALLOWED: "Autorisé", FORBIDDEN: "Interdit", CONFIRM: "Toujours confirmer" };
 const RULE_HELP: Record<ModeRule, string> = {
@@ -140,8 +140,9 @@ export function RoutingSettingsView({ initial }: { initial: RoutingSettingsInput
         <div className="flex flex-col gap-4">
           {ROUTING_MODES.map((m) => (
             <Panel key={m} className="flex flex-col gap-3">
-              <p className="font-medium">
-                {MODE_EMOJI[m]} {MODE_LABELS[m]}
+              <p className="flex items-center gap-2 font-medium">
+                <ModeIcon mode={m} className="size-4 text-muted-foreground" />
+                {MODE_LABELS[m]}
               </p>
               <Field label="Question (anglais)" htmlFor={`q-${m}`}>
                 <Textarea id={`q-${m}`} rows={2} value={draft.modes[m].question} onChange={(e) => setMode(m, { question: e.target.value })} className="bg-background text-sm" />
@@ -196,7 +197,7 @@ export function RoutingSettingsView({ initial }: { initial: RoutingSettingsInput
                     aria-pressed={on}
                     onClick={() => setDraft((d) => ({ ...d, fallbackModes: on ? d.fallbackModes.filter((x) => x !== m) : [...d.fallbackModes, m] }))}
                   >
-                    {MODE_EMOJI[m]} {MODE_LABELS[m]}
+                    <ModeIcon mode={m} /> {MODE_LABELS[m]}
                   </Button>
                 );
               })}
@@ -296,7 +297,10 @@ function TestTable({
           {ROUTING_MODES.map((m) => (
             <tr key={m} className="border-t border-background">
               <td className="px-3 py-2 font-medium whitespace-nowrap">
-                {MODE_EMOJI[m]} {MODE_LABELS[m]}
+                <span className="inline-flex items-center gap-1.5">
+                  <ModeIcon mode={m} className="size-3.5 text-muted-foreground" />
+                  {MODE_LABELS[m]}
+                </span>
               </td>
               <td className="px-3 py-2 tabular-nums">{Math.round(probabilities[m] * 100)} %</td>
               <td className="px-3 py-2 text-muted-foreground tabular-nums">{Math.round(config.modes[m].threshold * 100)} %</td>

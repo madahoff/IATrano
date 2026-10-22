@@ -52,3 +52,22 @@ export function sensitiveReason(text: string): string | null {
   if (text.split(/\s+/).some(looksRandom)) return "Ce texte contient une chaîne qui ressemble à un secret : il n'est pas mémorisé.";
   return null;
 }
+
+// Informations personnelles sensibles (santé, convictions, orientation, origine, situation judiciaire ou financière) :
+// jamais mémorisées automatiquement. L'utilisateur peut les retenir sur demande explicite ou les saisir lui-même.
+// Racines suivies de lettres quelconques (« diabète », « diabétique ») ; frontières Unicode (\b ignore les accents).
+const term = (alternatives: string) => new RegExp(`(?<![\\p{L}\\d])(?:${alternatives})(?![\\p{L}\\d])`, "iu");
+const SENSITIVE_PERSONAL = [
+  term("malad(?:ie|e)s?|diab[èée]t\\p{L}*|cancers?|d[ée]pression|d[ée]prim[ée]e?|anxi[ée]t[ée]|handicap\\p{L}*|enceinte|grossesse|traitement m[ée]dical|m[ée]dicaments?|th[ée]rapie|psychiatr\\p{L}*|s[ée]ropositi\\p{L}*|vih|hiv|ant[ée]c[ée]dents m[ée]dicaux|diagnostiqu[ée]e? (?:avec|d\\p{L}*)|ma sant[ée]"),
+  term("religion|musulmane?|chr[ée]tienne?|catholique|protestante?|juif|juive|bouddhiste|ath[ée]e|croyante?|je prie"),
+  term("je vote|j'ai vot[ée]|parti politique|militante?|syndiqu[ée]e?|opinions? politiques?"),
+  term("homosexuel\\p{L}*|h[ée]t[ée]rosexuel\\p{L}*|bisexuel\\p{L}*|gay|lesbienne|transgenre|orientation sexuelle|vie sexuelle"),
+  term("origine ethnique|ethnie|casier judiciaire|condamn[ée]e?|incarc[ée]r\\p{L}*|mes dettes|surendett\\p{L}*|mon salaire|mes revenus|num[ée]ro de s[ée]curit[ée] sociale|passeport|carte d'identit[ée]"),
+];
+
+/** Raison du refus d'une mémorisation automatique d'information personnelle sensible, ou null. */
+export function sensitivePersonalReason(text: string): string | null {
+  return SENSITIVE_PERSONAL.some((r) => r.test(text))
+    ? "Information personnelle sensible non mémorisée automatiquement : dites « retiens que… » ou ajoutez-la depuis la page Mémoire si vous le souhaitez."
+    : null;
+}

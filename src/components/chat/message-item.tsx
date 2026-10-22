@@ -116,22 +116,12 @@ export const AssistantMessage = memo(function AssistantMessage({
   const research = message.research;
   // Une recherche sans source (échec, aucun résultat) n'active pas les citations : tout [n] serait faux.
   const citeSources = research && research.sources.length > 0 ? research.sources : research ? [] : undefined;
-  const researching = research?.status === "running";
 
   return (
     <div className="group/msg flex flex-col">
       {message.routing && <RoutingTags routing={message.routing} />}
       {research && <ResearchPanel research={research} answerStarted={hasText} />}
       {showThinking && <ThinkingBlock thinking={message.thinking!} active={streaming} answerStarted={hasText} />}
-
-      {streaming && !hasText && !showThinking && !researching && (
-        <div className="flex h-7 items-center gap-1" role="status">
-          <span className="size-2 animate-pulse rounded-full bg-foreground/60" />
-          <span className="size-2 animate-pulse rounded-full bg-foreground/40 [animation-delay:150ms]" />
-          <span className="size-2 animate-pulse rounded-full bg-foreground/25 [animation-delay:300ms]" />
-          <span className="ml-2 text-sm text-muted-foreground">{message.thinkingEnabled ? "Qwen réfléchit…" : "Qwen rédige la réponse…"}</span>
-        </div>
-      )}
 
       {hasText && <Markdown content={message.content} sources={citeSources} streaming={streaming} />}
       {streaming && hasText && !message.artifactBuilding && <span className="mt-1 inline-block h-4 w-1.5 animate-pulse rounded-full bg-foreground/50" aria-hidden />}

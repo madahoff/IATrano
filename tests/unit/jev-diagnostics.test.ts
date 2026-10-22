@@ -33,14 +33,14 @@ const routingNoul = (name: string, state: string) => {
 };
 
 describe("runJevDiagnostics", () => {
-  it("succès : 7 étapes ✅ et connexion opérationnelle", async () => {
+  it("succès : 7 étapes réussies et connexion opérationnelle", async () => {
     const r = await diagnose({ apiKey: KEY, noul: routingNoul });
     expect(statuses(r)).toEqual({ tcp: "ok", health: "ok", models: "ok", auth: "ok", decision: "ok", routing: "ok", perf: "ok" });
     expect(r.verdict).toBe("OK");
     expect(step(r, "decision").detail).toContain("0.930");
     expect(step(r, "auth").detail).toMatch(/sans clé correctement refusée/);
-    expect(step(r, "routing").detail).toMatch(/Problème de logique → 🧠 Réflexion approfondie/);
-    expect(step(r, "routing").detail).toMatch(/Question d'actualité → 🔍 Recherche web/);
+    expect(step(r, "routing").detail).toMatch(/Problème de logique → Réflexion approfondie/);
+    expect(step(r, "routing").detail).toMatch(/Question d'actualité → Recherche web/);
     expect(step(r, "routing").warnings).toBeUndefined();
     expect(step(r, "perf").detail).toMatch(/inférence 42.5 ms/);
     // Une seule requête par message de routage, avec les trois questions.
@@ -191,10 +191,10 @@ describe("rapport", () => {
     };
     const text = formatReportText(redactReport(report, ["abc-secret"]));
     expect(text).toContain("Verdict : Échec");
-    expect(text).toContain("✅ 1. Joignabilité réseau (TCP) — 3 ms");
-    expect(text).toContain("❌ 2. Authentification — 4 ms");
+    expect(text).toContain("[OK] 1. Joignabilité réseau (TCP) — 3 ms");
+    expect(text).toContain("[ÉCHEC] 2. Authentification — 4 ms");
     expect(text).toContain("Cause : Clé •••• refusée");
-    expect(text).toContain("⏭ 3. Décision — non exécutée");
+    expect(text).toContain("[IGNORÉE] 3. Décision — non exécutée");
     expect(text).not.toContain("abc-secret");
   });
 });

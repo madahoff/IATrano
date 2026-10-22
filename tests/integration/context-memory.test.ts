@@ -113,7 +113,10 @@ describe("compteur de contexte", () => {
     const { usage: u } = await usage(null);
     expect(u).toMatchObject({ window: 32768, reserve: 1024, capacity: 31744, windowSource: "provider", providerMax: 32768, estimated: true, state: "normal" });
     expect(u!.used).toBeGreaterThan(50);
-    expect(u!.parts.system).toBe(u!.usedRaw);
+    // Sans aucun souvenir, seule la consigne « mémoire gérée par l'application » occupe la part mémoire.
+    expect(u!.parts.memory).toBeGreaterThan(0);
+    expect(u!.parts.memory).toBeLessThan(80);
+    expect(u!.parts.system + u!.parts.memory).toBe(u!.usedRaw);
   });
 
   it("après un message : num_ctx envoyé, mesure du fournisseur enregistrée, compteur recalibré et augmenté", async () => {
@@ -346,20 +349,22 @@ describe("mémoire persistante", () => {
   it("enregistrement automatique sur demande explicite, et correction d'une mémoire existante", async () => {
     const { memory } = await (await post({ kind: "FACT", content: "L'utilisateur utilise MySQL." })).json();
     state.json = async (req) => {
-      expect(req.messages[1].content).toContain("M1 [FACT] L'utilisateur utilise MySQL.");
+      expect(req.messages[1].content).toContain("M1 [personnel · FACT] L'utilisateur utilise MySQL.");
       return JSON.stringify({
         actions: [
-          { action: "update", ref: "M1", content: "L'utilisateur utilise PostgreSQL." },
-          { action: "add", kind: "PREFERENCE", content: "L'utilisateur veut des exemples en TypeScript." },
-          { action: "add", kind: "FACT", content: "Son mot de passe est azerty123" },
+          { action: "update", ref: "M1", content: "L'utilisateur utilise PostgreSQL.", evidence: "En fait j'utilise PostgreSQL, pas MySQL" },
+          { action: "add", kind: "PREFERENCE", content: "L'utilisateur veut des exemples en TypeScript.", evidence: "je veux des exemples en TypeScript" },
+          { action: "add", kind: "FACT", content: "Son mot de passe est azerty123", evidence: "je veux des exemples" },
         ],
       });
     };
     const events = await chat({ action: "send", content: "En fait j'utilise PostgreSQL, pas MySQL. Retiens aussi que je veux des exemples en TypeScript.", model: "qwen:3b", thinking: false });
     expect(events.find((e) => e.type === "memory")).toMatchObject({ saved: ["L'utilisateur veut des exemples en TypeScript."], updated: ["L'utilisateur utilise PostgreSQL."], removed: 0 });
-    const all = await db.memory.findMany({ where: { userId } });
+    const all = await db.memory.findMany({ where: { userId, status: "ACTIVE" } });
     expect(all).toHaveLength(2);
-    expect(all.find((m) => m.id === memory.id)?.content).toBe("L'utilisateur utilise PostgreSQL.");
+    // L'ancienne version est conservée comme historique, jamais injectée.
+    expect((await db.memory.findUniqueOrThrow({ where: { id: memory.id } })).status).toBe("SUPERSEDED");
+    expect(all.some((m) => m.content === "L'utilisateur utilise PostgreSQL.")).toBe(true);
     expect(all.some((m) => /azerty/.test(m.content))).toBe(false);
   });
 

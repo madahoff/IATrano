@@ -21,13 +21,25 @@ export const SUMMARY_HEADER =
   "RÉSUMÉ DES ÉCHANGES PRÉCÉDENTS — les messages plus anciens de cette conversation ont été compactés dans ce résumé (l'utilisateur conserve l'historique complet). Appuie-toi dessus pour assurer la continuité :";
 
 export const MEMORY_HEADER =
-  "MÉMOIRE DE L'UTILISATEUR — informations mémorisées lors de conversations précédentes, à la demande de l'utilisateur. Ce ne sont PAS des messages de la conversation actuelle. Utilise-les seulement si elles sont utiles à la demande, sans les réciter :";
+  "MÉMOIRE DE L'UTILISATEUR — informations retenues lors de conversations précédentes (l'utilisateur peut les consulter et les supprimer). Ce ne sont PAS des messages de la conversation actuelle. Applique les préférences ; utilise le reste seulement si c'est utile à la demande, sans le réciter. Une mention « non confirmé » signale une hypothèse à ne pas présenter comme un fait :";
+
+export const PROJECT_MEMORY_HEADER = (name: string | null) =>
+  `MÉMOIRE DU PROJET${name ? ` « ${name} »` : ""} — décisions, contraintes et contexte partagés par les conversations de ce projet (valables uniquement dans ce projet) :`;
+
+/** Rappel au modèle : la mémorisation est assurée par l'application après sa réponse. */
+export const MEMORY_CAPABILITY_NOTE =
+  "Une mémoire persistante est gérée par l'application : quand l'utilisateur demande de retenir ou d'oublier quelque chose, c'est pris en compte automatiquement après ta réponse. Ne prétends pas en être incapable et n'invente pas de souvenirs absents de la mémoire ci-dessous.";
 
 export function assembleContext(opts: {
   systemPrompt?: string | null;
   clarifications: boolean;
   now?: Date;
   memoryLines?: string[];
+  /** Souvenirs propres au projet de la conversation (section distincte). */
+  projectMemoryLines?: string[];
+  projectName?: string | null;
+  /** La mémoire persistante est active pour cet utilisateur (ajoute MEMORY_CAPABILITY_NOTE). */
+  memoryActive?: boolean;
   summaryText?: string | null;
   /** Messages postérieurs au résumé actif (ou tout l'historique s'il n'y en a pas). */
   history: HistoryMessage[];
@@ -35,7 +47,13 @@ export function assembleContext(opts: {
   capacity: number;
 }): AssembledContext {
   const base = buildSystemPrompt(opts);
-  const memoryBlock = opts.memoryLines?.length ? `${MEMORY_HEADER}\n${opts.memoryLines.map((l) => `- ${l}`).join("\n")}` : "";
+  const memoryBlock = [
+    opts.memoryActive ? MEMORY_CAPABILITY_NOTE : "",
+    opts.memoryLines?.length ? `${MEMORY_HEADER}\n${opts.memoryLines.map((l) => `- ${l}`).join("\n")}` : "",
+    opts.projectMemoryLines?.length ? `${PROJECT_MEMORY_HEADER(opts.projectName ?? null)}\n${opts.projectMemoryLines.map((l) => `- ${l}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const summaryBlock = opts.summaryText?.trim() ? `${SUMMARY_HEADER}\n${opts.summaryText.trim()}` : "";
   const system = [base, memoryBlock, summaryBlock].filter(Boolean).join("\n\n");
 

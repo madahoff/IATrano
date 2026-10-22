@@ -54,17 +54,50 @@ enum WebSearchStatus {
 
 // --- Contexte et mémoire (voir src/lib/context et src/lib/memory)
 enum MemoryKind {
-  // Préférence ou consigne durable (« réponds en français », « tutoie-moi »)
+  // Préférence ou consigne durable (« réponds en français », « tutoie-moi », « pnpm plutôt que npm »)
   PREFERENCE
-  // Fait stable sur l'utilisateur (métier, outils, environnement)
+  // Fait stable sur l'utilisateur ou sur un projet (métier, outils, environnement, architecture)
   FACT
-  // Information liée à un projet nommé
+  // Information sur un projet nommé, hors espace projet (mémoire globale étiquetée par le nom du projet)
   PROJECT
+  // Choix validé, convention à respecter
+  DECISION
+  // Contrainte ou règle imposée
+  CONSTRAINT
+  // Objectif poursuivi
+  OBJECTIVE
 }
 
 enum MemorySource {
   MANUAL
   AUTO
+  DOCUMENT
+}
+
+/// Fiabilité d'un souvenir : jamais une supposition de l'IA présentée comme un fait confirmé.
+enum MemoryCertainty {
+  // Saisi ou corrigé par l'utilisateur, demandé explicitement (« retiens que… ») ou répété plusieurs fois
+  CONFIRMED
+  // Exprimé par l'utilisateur au fil d'une conversation, sans demande explicite
+  STATED
+  // Formulé avec hésitation (« je pense passer à Vue ») : présenté au modèle comme non confirmé
+  UNCERTAIN
+}
+
+enum MemoryStatus {
+  ACTIVE
+  // Remplacé par une version plus récente (supersededById) : conservé pour l'historique, jamais injecté
+  SUPERSEDED
+}
+
+enum MemoryJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  // Rien à traiter (message supprimé, mémoire désactivée entre-temps)
+  SKIPPED
+  // Abandonné après plusieurs tentatives : visible et relançable depuis l'interface
+  FAILED
 }
 
 enum SummaryStatus {
@@ -89,22 +122,6 @@ enum ProjectDocumentStatus {
   ERROR
 }
 
-enum ProjectMemoryKind {
-  OBJECTIVE
-  CONSTRAINT
-  DECISION
-  FACT
-  DEFINITION
-  CONCLUSION
-  OTHER
-}
-
-enum ProjectMemorySource {
-  USER
-  DOCUMENT
-  AI
-}
-
 enum LogLevel {
   INFO
   WARN
@@ -122,11 +139,13 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  sessions      Session[]
-  conversations Conversation[]
-  settings      UserSettings?
-  memories      Memory[]
-  projects      Project[]
+  sessions         Session[]
+  conversations    Conversation[]
+  settings         UserSettings?
+  memories         Memory[]
+  memoryJobs       MemoryJob[]
+  memoryTombstones MemoryTombstone[]
+  projects         Project[]
 }
 
 model Session {
@@ -147,19 +166,19 @@ model Session {
 }
 
 model UserSettings {
-  userId                String          @id
+  userId                String           @id
   // null = hériter du paramètre global de l'application
   defaultModel          String?
   thinkingDefault       Boolean?
   clarificationsEnabled Boolean?
   webSearchDefault      Boolean?
   // Mémoire persistante : utilisation dans les prompts et enregistrement automatique.
-  memoryEnabled         Boolean         @default(true)
-  memoryAutoSave        Boolean         @default(true)
-  theme                 ThemePreference @default(SYSTEM)
+  memoryEnabled         Boolean          @default(true)
+  memoryAutoSave        Boolean          @default(true)
+  theme                 ThemePreference  @default(SYSTEM)
   /// Mode d'autorisation du routage JEV choisi par l'utilisateur (null : valeur de l'administration)
   routingAuthMode       RoutingAuthMode?
-  updatedAt             DateTime        @updatedAt
+  updatedAt             DateTime         @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -179,21 +198,21 @@ model AppSettings {
 
   // --- Recherche Web (pipeline RAG, voir src/lib/search)
   // Interrupteur général de la fonctionnalité (aucune recherche possible si false).
-  webSearchEnabled     Boolean            @default(true)
+  webSearchEnabled      Boolean            @default(true)
   // Valeur par défaut du contrôle « Recherche Web automatique » des nouvelles conversations.
-  webSearchAutoDefault Boolean            @default(true)
-  searchProvider       SearchProviderType @default(SEARXNG)
+  webSearchAutoDefault  Boolean            @default(true)
+  searchProvider        SearchProviderType @default(SEARXNG)
   // null = valeur de SEARXNG_URL (ou aucun moteur configuré)
-  searxngUrl           String?
+  searxngUrl            String?
   // Clé Brave Search. Jamais renvoyée au navigateur.
-  braveApiKey          String?
+  braveApiKey           String?
   /// Basculer automatiquement sur Brave (si une clé est configurée) quand SearXNG échoue ou ne renvoie rien
-  searchFallbackEnabled Boolean           @default(true)
-  searchMaxResults     Int                @default(8)
-  searchMaxPages       Int                @default(4)
-  searchTimeoutMs      Int                @default(20000)
+  searchFallbackEnabled Boolean            @default(true)
+  searchMaxResults      Int                @default(8)
+  searchMaxPages        Int                @default(4)
+  searchTimeoutMs       Int                @default(20000)
   // Durée de conservation en mémoire des résultats et pages déjà récupérés (0 = pas de cache).
-  searchCacheTtlSec    Int                @default(900)
+  searchCacheTtlSec     Int                @default(900)
 
   // --- Contexte (voir src/lib/context)
   // Fenêtre envoyée au moteur (num_ctx d'Ollama) quand aucun réglage propre au modèle n'existe.
@@ -206,25 +225,29 @@ model AppSettings {
   contextAutoCompactPct  Int     @default(90)
   // Interrupteur général de la mémoire persistante.
   memoryFeatureEnabled   Boolean @default(true)
+  // Modèle utilisé pour l'analyse automatique de la mémoire (null = modèle de la conversation).
+  memoryModel            String?
 
   updatedAt   DateTime @updatedAt
   updatedById String?
 }
 
 model Conversation {
-  id             String    @id @default(cuid())
-  userId         String
-  title          String?
-  titleGenerated Boolean   @default(false)
-  model          String?
+  id                String    @id @default(cuid())
+  userId            String
+  title             String?
+  titleGenerated    Boolean   @default(false)
+  model             String?
   // État du contrôle « Recherche Web automatique » de cette conversation (fixé à la création).
-  webSearch      Boolean   @default(true)
-  projectId      String?
+  webSearch         Boolean   @default(true)
+  projectId         String?
   /// Modes acceptés d'office pour cette conversation (« Toujours accepter pour cette conversation »)
-  routingAutoAccept String[] @default([])
-  archivedAt     DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  routingAutoAccept String[]  @default([])
+  /// Documents interrogés par cette conversation ([] : tous les documents du projet)
+  documentIds       String[]  @default([])
+  archivedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   // Dernière compaction du contexte (les versions de résumés sont dans ContextSummary).
   compactionStatus    CompactionStatus?
@@ -236,7 +259,7 @@ model Conversation {
   messages  Message[]
   summaries ContextSummary[]
   artifacts Artifact[]
-  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  project   Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([userId, archivedAt, updatedAt(sort: Desc)])
   // Conversations d'un projet (créé par la migration 20261022000000_projects_documents).
@@ -270,87 +293,111 @@ model Message {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  webSearch    WebSearch?
-  artifacts    Artifact[]
+  conversation      Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  webSearch         WebSearch?
+  artifacts         Artifact[]
+  memoryJobs        MemoryJob[]
+  documentRetrieval DocumentRetrieval?
 
   @@index([conversationId, createdAt])
   @@index([content(ops: raw("gin_trgm_ops"))], type: Gin, map: "Message_content_trgm_idx")
 }
 
 model Project {
-  id                 String   @id @default(cuid())
-  userId             String
-  name               String
-  description        String?
-  instructions       String?
-  memoryEnabled      Boolean  @default(true)
-  documentsEnabled   Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id               String   @id @default(cuid())
+  userId           String
+  name             String
+  description      String?
+  instructions     String?
+  memoryEnabled    Boolean  @default(true)
+  documentsEnabled Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversations Conversation[]
-  documents    ProjectDocument[]
-  memories     ProjectMemory[]
+  documents     ProjectDocument[]
+  memories      Memory[]
 
   @@unique([userId, name])
   @@index([userId, updatedAt(sort: Desc)])
 }
 
 model ProjectDocument {
-  id           String               @id @default(cuid())
-  projectId    String
-  name         String
-  mimeType     String
-  sizeBytes    Int
-  checksum     String
-  status       ProjectDocumentStatus @default(PENDING)
-  error        String?
-  contentText  String?              @db.Text
-  createdAt    DateTime             @default(now())
-  updatedAt    DateTime             @updatedAt
+  id          String                @id @default(cuid())
+  projectId   String
+  name        String
+  mimeType    String
+  sizeBytes   Int
+  checksum    String
+  status      ProjectDocumentStatus @default(PENDING)
+  error       String?
+  /// Texte intégral des documents importés avant le pipeline documentaire (les nouveaux documents utilisent DocumentPage)
+  contentText String?               @db.Text
+  kind        DocumentKind          @default(TEXT)
+  /// Version courante (DocumentVersion) : incrémentée quand un fichier du même nom remplace celui-ci
+  version     Int                   @default(1)
+  /// Fichier original, relatif à DOCUMENT_STORAGE_DIR (conservé pour consultation et retraitement)
+  storagePath String?
+  language    String?
+  /// Pages, diapositives, feuilles, images ou tranches de vidéo
+  unitCount   Int?
+  stage       DocumentStage         @default(QUEUED)
+  /// Avancement par étape : { extract: { done, total }, ocr: …, embed: …, analyze: … }
+  progress    Json                  @default("{}")
+  /// Limites constatées (pages non extraites, OCR indisponible, audio non transcrit…) : jamais passées sous silence
+  warnings    String[]              @default([])
+  metadata    Json?
+  indexedAt   DateTime?
+  analyzedAt  DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
 
-  project Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  chunks  ProjectDocumentChunk[]
-  memories ProjectMemory[]
+  project  Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chunks   ProjectDocumentChunk[]
+  memories Memory[]
+  versions DocumentVersion[]
+  pages    DocumentPage[]
+  sections DocumentSection[]
+  insights DocumentInsight[]
+  jobs     DocumentJob[]
 
   @@unique([projectId, checksum])
   @@index([projectId, status, updatedAt(sort: Desc)])
 }
 
 model ProjectDocumentChunk {
-  id         String   @id @default(cuid())
-  documentId String
-  ordinal    Int
-  content    String   @db.Text
-  tokenCount Int
-  page       Int?
-  createdAt  DateTime @default(now())
+  id             String                   @id @default(cuid())
+  documentId     String
+  ordinal        Int
+  content        String                   @db.Text
+  tokenCount     Int
+  /// Première page (ou unité) couverte par le segment
+  page           Int?
+  pageEnd        Int?
+  sectionId      String?
+  /// Titres hiérarchiques de la section (« 2 Méthodes » › « 2.3 Analyse »)
+  sectionPath    String[]                 @default([])
+  type           SegmentType              @default(TEXT)
+  /// Vidéo / audio : intervalle couvert (millisecondes)
+  startMs        Int?
+  endMs          Int?
+  contentHash    String                   @default("")
+  /// Nombre de lexèmes indexés (longueur du document pour BM25)
+  lexCount       Int                      @default(0)
+  /// Index plein texte (rempli en SQL : to_tsvector(langue, unaccent(contenu)))
+  tsv            Unsupported("tsvector")?
+  /// Vecteur d'embedding (Float32 petit-boutiste) et modèle qui l'a produit
+  embedding      Bytes?
+  embeddingModel String?
+  createdAt      DateTime                 @default(now())
 
   document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@unique([documentId, ordinal])
   @@index([documentId])
-}
-
-model ProjectMemory {
-  id             String             @id @default(cuid())
-  projectId      String
-  content        String             @db.Text
-  kind           ProjectMemoryKind
-  source         ProjectMemorySource
-  sourceDocumentId String?
-  sourceConversationId String?
-  confidence     Float?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-
-  project  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  document ProjectDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
-
-  @@index([projectId, kind, updatedAt(sort: Desc)])
-  @@index([sourceDocumentId])
+  @@index([documentId, page])
+  @@index([tsv], type: Gin, map: "ProjectDocumentChunk_tsv_idx")
 }
 
 // Trace d'une recherche Web associée à UNE réponse (supprimée avec elle).
@@ -422,24 +469,86 @@ model ContextSummary {
   @@index([conversationId, status])
 }
 
-// Mémoire persistante, strictement propre à un utilisateur.
+// Mémoire persistante, strictement propre à un utilisateur (voir src/lib/memory).
+// projectId null = mémoire personnelle globale ; sinon mémoire propre à ce projet (jamais injectée ailleurs).
 model Memory {
-  id                   String       @id @default(cuid())
+  id                   String          @id @default(cuid())
   userId               String
+  projectId            String?
   kind                 MemoryKind
-  // Nom du projet pour kind = PROJECT
+  // Nom du projet pour kind = PROJECT (mémoire globale, hors espace projet)
   project              String?
   content              String
-  source               MemorySource @default(MANUAL)
+  /// Sujet stable (« gestionnaire-paquets », « langue-reponse ») : deux souvenirs actifs du même sujet et de la même portée se contredisent
+  topic                String?
+  source               MemorySource    @default(MANUAL)
+  certainty            MemoryCertainty @default(CONFIRMED)
+  status               MemoryStatus    @default(ACTIVE)
+  /// 1 (anecdotique) à 5 (essentiel)
+  importance           Int             @default(3)
+  /// Nombre de fois où l'information a été exprimée (renforcement)
+  mentionCount         Int             @default(1)
+  lastConfirmedAt      DateTime        @default(now())
+  supersededById       String?
   sourceConversationId String?
-  useCount             Int          @default(0)
+  sourceDocumentId     String?
+  useCount             Int             @default(0)
   lastUsedAt           DateTime?
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectRef Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document   ProjectDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, kind])
+  @@index([userId, status, projectId])
+  @@index([userId, topic])
+  @@index([projectId, status])
+  @@index([sourceDocumentId])
+}
+
+/// Analyse d'un message de l'utilisateur pour la mémoire, persistée avant traitement :
+/// un redémarrage ou une panne du modèle ne fait perdre aucune opération (reprise par src/lib/memory/jobs.ts).
+model MemoryJob {
+  id             String          @id @default(cuid())
+  userId         String
+  conversationId String
+  /// Message de l'utilisateur analysé : supprimé avec lui (un message effacé n'est jamais mémorisé)
+  messageId      String
+  projectId      String?
+  model          String
+  status         MemoryJobStatus @default(PENDING)
+  attempts       Int             @default(0)
+  nextAttemptAt  DateTime        @default(now())
+  lockedAt       DateTime?
+  error          String?
+  /// Résultat : { saved, updated, removed, reinforced, rejected }
+  result         Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([userId, status])
+  @@index([messageId])
+}
+
+/// Trace d'un oubli demandé : empreinte hachée (aucun texte en clair) empêchant une analyse encore en attente
+/// de recréer le souvenir supprimé. Purgée après 30 jours.
+model MemoryTombstone {
+  id          String   @id @default(cuid())
+  userId      String
+  projectId   String?
+  fingerprint String[]
+  topicHash   String?
+  createdAt   DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId, kind])
+  @@index([userId, createdAt])
 }
 
 model ErrorLog {
@@ -601,4 +710,278 @@ model Artifact {
 
   @@unique([conversationId, key, version])
   @@index([messageId])
+}
+
+// ---------------------------------------------------------------------
+// Bibliothèque documentaire : ingestion progressive, index hybride, synthèses et méthodes (voir src/lib/documents).
+// Le contenu original (fichier + texte par page) est toujours conservé : une synthèse ne remplace jamais le document.
+// ---------------------------------------------------------------------
+
+enum DocumentKind {
+  PDF
+  DOCX
+  PPTX
+  XLSX
+  CSV
+  TEXT
+  MARKDOWN
+  JSON
+  HTML
+  IMAGE
+  VIDEO
+  AUDIO
+}
+
+enum DocumentStage {
+  QUEUED
+  EXTRACT
+  OCR
+  SEGMENT
+  INDEX
+  EMBED
+  ANALYZE
+  SYNTHESIZE
+  DONE
+}
+
+enum DocumentUnitMethod {
+  TEXT
+  OCR
+  TRANSCRIPT
+  KEYFRAME
+  NONE
+}
+
+enum DocumentUnitStatus {
+  OK
+  // Aucun contenu (page blanche, silence)
+  EMPTY
+  // Extrait en partie (OCR peu fiable, transcription incertaine)
+  PARTIAL
+  FAILED
+  // Non traité volontairement (limite atteinte, outil indisponible) : signalé dans warnings
+  SKIPPED
+}
+
+enum SegmentType {
+  TEXT
+  TABLE
+  CAPTION
+  OCR
+  TRANSCRIPT
+  VISUAL
+  NOTE
+}
+
+enum InsightKind {
+  SUMMARY
+  CONCEPT
+  DEFINITION
+  METHOD
+  RULE
+  CONTRADICTION
+  RELATION
+  TIMELINE
+}
+
+enum InsightOrigin {
+  // Énoncé explicitement par la source (recommandé par l'auteur, défini dans le texte)
+  EXPLICIT
+  // Déduit par l'IA à partir du contenu
+  INFERRED
+}
+
+enum DocumentJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+/// Historique des versions d'un document (un nouveau fichier du même nom crée une version).
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  documentId  String
+  version     Int
+  name        String
+  checksum    String
+  sizeBytes   Int
+  storagePath String?
+  /// Bilan de la réindexation : { segmentsReused, segmentsNew, segmentsRemoved, sectionsChanged }
+  changes     Json?
+  createdAt   DateTime @default(now())
+
+  document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, version])
+}
+
+/// Unité d'origine (page, diapositive, feuille, image, tranche de vidéo) et son texte extrait.
+model DocumentPage {
+  id         String             @id @default(cuid())
+  documentId String
+  number     Int
+  /// Libellé lisible : « Feuille Ventes », « 00:12:30 – 00:13:00 »…
+  label      String?
+  method     DocumentUnitMethod
+  status     DocumentUnitStatus
+  charCount  Int                @default(0)
+  /// Confiance moyenne de l'OCR ou de la transcription (0–1)
+  confidence Float?
+  error      String?
+  text       String             @db.Text
+  /// Image rendue (page OCR, image clé), relative à DOCUMENT_STORAGE_DIR
+  imagePath  String?
+  /// Analyse visuelle par un modèle vision-langage : { description, elements[], model } — absente si seul le texte a été extrait
+  visual     Json?
+  startMs    Int?
+  endMs      Int?
+
+  document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, number])
+}
+
+/// Section hiérarchique détectée (titre, niveau, pages) et son analyse progressive.
+model DocumentSection {
+  id             String    @id @default(cuid())
+  documentId     String
+  ordinal        Int
+  level          Int
+  title          String
+  path           String[]
+  pageStart      Int?
+  pageEnd        Int?
+  startMs        Int?
+  endMs          Int?
+  tokenCount     Int       @default(0)
+  /// Empreinte du contenu : une section inchangée entre deux versions n'est pas réanalysée
+  contentHash    String
+  /// { subject, concepts[], definitions[], arguments[], conclusions[], methods[], causes[], examples[], rules[], references[], uncertain[] }
+  analysis       Json?
+  analysisStatus String    @default("PENDING")
+  analysisModel  String?
+  analyzedAt     DateTime?
+
+  document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, ordinal])
+}
+
+/// Connaissance extraite (mémoire de synthèse) : synthèse globale, concepts, méthodes, règles, contradictions.
+model DocumentInsight {
+  id         String        @id @default(cuid())
+  documentId String
+  projectId  String
+  kind       InsightKind
+  title      String
+  /// Structure propre au type (méthode : objective, context, prerequisites, steps[], tools[], decisionRules[], inputs, outputs, pitfalls[], limits[], examples[])
+  content    Json
+  /// Rendu texte (recherche et injection dans le contexte)
+  text       String        @db.Text
+  origin     InsightOrigin @default(EXPLICIT)
+  /// [{ page, pageEnd?, section, startMs? }] — références vérifiables
+  sources    Json          @default("[]")
+  sectionIds String[]      @default([])
+  /// ACTIVE ou STALE (section modifiée par une nouvelle version)
+  status     String        @default("ACTIVE")
+  version    Int           @default(1)
+  model      String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, kind, status])
+  @@index([projectId, kind, status])
+}
+
+/// Traitement d'un document, persisté et repris après interruption (curseur par étape).
+model DocumentJob {
+  id            String            @id @default(cuid())
+  documentId    String
+  status        DocumentJobStatus @default(PENDING)
+  stage         DocumentStage     @default(QUEUED)
+  /// Point de reprise : { page, section, segment… } propre à l'étape en cours
+  cursor        Json              @default("{}")
+  /// Étapes à exécuter (retraitement partiel : ["ANALYZE", "SYNTHESIZE"])
+  stages        String[]          @default([])
+  attempts      Int               @default(0)
+  lockedAt      DateTime?
+  lockedBy      String?
+  nextAttemptAt DateTime          @default(now())
+  error         String?
+  /// Mesures : { extractMs, ocrMs, embedMs, analyzeMs, pages, segments }
+  metrics       Json              @default("{}")
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  document ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([documentId, createdAt(sort: Desc)])
+}
+
+/// Cache de calculs coûteux indexé par empreinte (embeddings, analyses, OCR, transcriptions) :
+/// un contenu déjà traité n'est jamais recalculé, même après réimport ou nouvelle version.
+model DocumentCache {
+  key       String   @id
+  kind      String
+  data      Bytes?
+  json      Json?
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+}
+
+/// Réglages de la bibliothèque documentaire (ligne unique id = 1).
+model DocumentSettings {
+  id                   Int      @id @default(1)
+  /// Modèle d'embeddings (null : recherche sémantique désactivée, recherche lexicale seule)
+  embeddingModel       String?
+  /// Serveur d'embeddings (null : même serveur que le LLM)
+  embeddingBaseUrl     String?
+  ocrEnabled           Boolean  @default(true)
+  ocrLanguages         String   @default("fra+eng")
+  /// Modèle vision-langage (images, schémas, graphiques) ; null = OCR seul, signalé comme tel
+  visionModel          String?
+  /// Endpoint compatible OpenAI /v1/audio/transcriptions (null : audio non transcrit)
+  transcriptionUrl     String?
+  transcriptionModel   String?
+  /// Analyse progressive (sections, synthèse, méthodes) par le LLM
+  analysisEnabled      Boolean  @default(true)
+  /// null = modèle par défaut de l'application
+  analysisModel        String?
+  chunkTargetTokens    Int      @default(450)
+  chunkOverlapTokens   Int      @default(60)
+  maxFileMb            Int      @default(300)
+  maxUnits             Int      @default(3000)
+  /// Documents traités simultanément
+  concurrency          Int      @default(1)
+  /// Passages documentaires transmis au modèle au maximum par réponse
+  retrievalMaxPassages Int      @default(10)
+  updatedAt            DateTime @updatedAt
+  updatedById          String?
+}
+
+/// Trace de la récupération documentaire d'une réponse : passages transmis, citations validées, vérifications.
+model DocumentRetrieval {
+  id          String   @id @default(cuid())
+  messageId   String   @unique
+  /// Stratégie : { intent, subQueries[], rounds, filters }
+  plan        Json
+  queries     String[]
+  /// Passages numérotés [D1]… : [{ n, documentId, name, page, pageEnd, section, startMs, excerpt, type }]
+  sources     Json     @default("[]")
+  cited       Int[]
+  /// Vérification de chaque citation : [{ n, supported, score }]
+  checks      Json     @default("[]")
+  limitations String[] @default([])
+  durationMs  Int?
+  createdAt   DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
 }

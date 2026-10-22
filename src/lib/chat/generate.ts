@@ -35,6 +35,11 @@ import { cleanVisibleText, createArtifactExtractor } from "@/lib/artifacts/extra
 import { ARTIFACT_EDIT_INSTRUCTIONS, ARTIFACT_INSTRUCTIONS, buildCurrentArtifactBlock } from "@/lib/artifacts/prompt";
 import { saveArtifactVersion } from "@/lib/artifacts/service";
 import { toArtifactRef } from "@/lib/artifacts/types";
+import { chatStarted } from "@/lib/documents/activity";
+import { checkCitationSupport, validateDocCitations } from "@/lib/documents/citations";
+import { retrieveForQuestion, type RetrievalResult } from "@/lib/documents/retrieval";
+import { getDocumentSettings } from "@/lib/documents/settings";
+import { ownedDocumentIds } from "./service";
 
 /** Modes décidés par le routage JEV pour cette réponse (null : ancien fonctionnement par interrupteurs). */
 export type RoutingPlan = {
@@ -123,6 +128,10 @@ export async function prepareGeneration(
     where: { id: conversation.id },
     data: { model, updatedAt: new Date(), ...(body.webSearch !== undefined ? { webSearch: body.webSearch } : {}), ...(body.projectId !== undefined ? { projectId: body.projectId } : {}) },
   });
+  // Sélection de documents envoyée avec le message : limitée aux documents du projet de la conversation.
+  if (body.documentIds !== undefined) {
+    conversation = await db.conversation.update({ where: { id: conversation.id }, data: { documentIds: await ownedDocumentIds(conversation.projectId, body.documentIds) } });
+  }
   return { conversation, userMessage, assistantMessage, history, isFirstExchange: history.length === 1 };
 }
 
@@ -155,7 +164,7 @@ export async function resolveModel(modelId: string, wantThinking: boolean): Prom
 
 const FLUSH_INTERVAL_MS = 1000;
 
-export async function runGeneration(opts: {
+type GenerationOptions = {
   userId: string;
   prepared: PreparedGeneration;
   resolved: ResolvedModel;
@@ -163,7 +172,19 @@ export async function runGeneration(opts: {
   signal: AbortSignal;
   emit: Emit;
   routing?: RoutingPlan;
-}) {
+};
+
+export async function runGeneration(opts: GenerationOptions) {
+  // Les traitements documentaires en arrière-plan cèdent la place au chat pendant la génération.
+  const end = chatStarted();
+  try {
+    await generate(opts);
+  } finally {
+    end();
+  }
+}
+
+async function generate(opts: GenerationOptions) {
   const { prepared, resolved, emit, signal } = opts;
   const routing = opts.routing ?? null;
   const { conversation, assistantMessage } = prepared;
@@ -224,6 +245,9 @@ export async function runGeneration(opts: {
   }
   const rag = web?.result.rag.length ? web.result.rag : null;
 
+  // --- Documents du projet : recherche hybride et itérative avant la génération (jamais bloquante en cas d'échec)
+  const docs = await documentPhase({ userId: opts.userId, prepared, resolved, provider, modelId: opts.modelId, question, capacity: window.capacity, withWeb: Boolean(rag), signal, emit });
+
   const clarify = createClarifyExtractor();
   const interactive = Boolean(routing?.interactive);
   const artifactEdit = interactive ? (routing?.artifactEdit ?? null) : null;
@@ -237,7 +261,8 @@ export async function runGeneration(opts: {
     query: question,
     // Réponse documentée : pas de questions de précision, le format de citation prime.
     // Réponse documentée ou page interactive : pas de questions de précision (format de sortie imposé).
-    clarifications: prefs.clarificationsEnabled && !web && !interactive,
+    clarifications: prefs.clarificationsEnabled && !web && !interactive && !docs?.passages.length,
+    documentBlock: docs?.block ?? "",
   });
   const messages = [...ctx.assembled.messages];
   if (web) {
@@ -248,6 +273,10 @@ export async function runGeneration(opts: {
       const projectContext = projectBlock ? `${projectBlock}\n\n` : "";
       messages[messages.length - 1] = { role: "user", content: `${projectContext}${buildRagUserMessage(question, rag, new Date())}` };
     }
+  }
+  if (docs) {
+    const limits = docs.limitations.length ? `\nLimites connues de cette recherche documentaire (à signaler si elles affectent la réponse) :\n${docs.limitations.map((l) => `- ${l}`).join("\n")}` : "";
+    messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${docs.instructions}${limits}` };
   }
   if (interactive) {
     messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${ARTIFACT_INSTRUCTIONS}${artifactEdit ? `\n\n${ARTIFACT_EDIT_INSTRUCTIONS}` : ""}` };
@@ -368,6 +397,17 @@ export async function runGeneration(opts: {
     if (resolved.thinkingEffective && !thinking) {
       emit({ type: "notice", code: "thinking_not_returned", message: "Le fournisseur n'a renvoyé aucun flux de réflexion distinct pour cette réponse." });
     }
+    // Références documentaires [Dn] : validées, puis confrontées au passage cité.
+    if (docs) {
+      const check = validateDocCitations(text, new Set(docs.passages.map((p) => p.n)));
+      text = check.content;
+      const checks = checkCitationSupport(text, new Map(docs.passages.map((p) => [p.n, p.content])));
+      emit({ type: "doc_citations", content: text, cited: check.cited, checks, removed: check.removed });
+      if (check.removed > 0) emit({ type: "notice", code: "doc_citations_removed", message: `${check.removed} référence(s) documentaire(s) ne correspondant à aucun passage transmis ont été retirées.` });
+      const weak = checks.filter((c) => !c.supported).map((c) => `[D${c.n}]`);
+      if (weak.length) emit({ type: "notice", code: "doc_citations_weak", message: `Référence(s) ${weak.join(", ")} faiblement étayée(s) par le passage cité : vérifiez le passage original.` });
+      await persistDocuments(assistantMessage.id, docs, check.cited, checks);
+    }
     // Citations : seules les références à des sources réellement transmises au modèle sont conservées.
     let cited: number[] = [];
     if (web) {
@@ -401,13 +441,29 @@ export async function runGeneration(opts: {
       await generateTitle(provider, opts.modelId, resolved, conversation.id, prepared.history[0]?.content ?? "", text, emit);
     }
     // Mémoire persistante et compaction automatique : après la réponse, sans la retarder.
-    await afterResponse({ userId: opts.userId, conversationId: conversation.id, modelId: opts.modelId, userMessage: question, answer: text, provider, think: resolved.model?.capabilities.thinking === "no" ? undefined : false, signal, emit });
+    await afterResponse({
+      userId: opts.userId,
+      conversationId: conversation.id,
+      projectId: conversation.projectId,
+      modelId: opts.modelId,
+      userMessageId: prepared.history.at(-1)?.id ?? null,
+      userMessage: question,
+      answer: text,
+      provider,
+      think: resolved.model?.capabilities.thinking === "no" ? undefined : false,
+      signal,
+      emit,
+    });
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const aborted = signal.aborted || (err instanceof ProviderError && err.code === "aborted");
     if (aborted) {
       // Texte partiel : les références invalides sont retirées avant enregistrement.
       if (web) text = validateCitations(text, new Set(rag?.map((s) => s.n) ?? [])).content;
+      if (docs) {
+        text = validateDocCitations(text, new Set(docs.passages.map((p) => p.n))).content;
+        await persistDocuments(assistantMessage.id, docs, [], []).catch(() => {});
+      }
       await web?.persist({ generation: "cancelled", cited: [], durationMs }).catch(() => {});
       await persist({ content: text, thinking: thinking || null, status: "CANCELLED", durationMs, ...usageData() }).catch(() => {});
       emit({ type: "done", status: "CANCELLED", durationMs });
@@ -415,10 +471,76 @@ export async function runGeneration(opts: {
     }
     const e = err instanceof ProviderError ? err : new ProviderError("Erreur inattendue pendant la génération.", "bad_response");
     await web?.persist({ generation: "failed", cited: [], durationMs }).catch(() => {});
+    if (docs) await persistDocuments(assistantMessage.id, docs, [], []).catch(() => {});
     await persist({ content: text, thinking: thinking || null, status: "ERROR", error: e.message, durationMs, ...usageData() }).catch(() => {});
     await logEvent("ERROR", "chat", e.message, { model: opts.modelId, code: e.code, ...errorDetails(err) }, opts.userId);
     emit({ type: "error", code: e.code, message: e.message, hint: e.hint });
   }
+}
+
+/** Récupère les passages des documents du projet pour la question (null : pas de projet ou aucun document prêt). */
+async function documentPhase(opts: {
+  userId: string;
+  prepared: PreparedGeneration;
+  resolved: ResolvedModel;
+  provider: LlmProvider;
+  modelId: string;
+  question: string;
+  capacity: number;
+  withWeb: boolean;
+  signal: AbortSignal;
+  emit: Emit;
+}): Promise<RetrievalResult | null> {
+  const { conversation } = opts.prepared;
+  if (!conversation.projectId || !opts.question.trim()) return null;
+  const started = Date.now();
+  try {
+    const settings = await getDocumentSettings();
+    const context = opts.prepared.history
+      .slice(-3, -1)
+      .map((m) => `${m.role === "USER" ? "Utilisateur" : "Assistant"} : ${m.content.slice(0, 400)}`)
+      .join("\n");
+    const result = await retrieveForQuestion({
+      userId: opts.userId,
+      projectId: conversation.projectId,
+      documentIds: conversation.documentIds,
+      question: opts.question,
+      context: context || null,
+      llm: { provider: opts.provider, model: opts.modelId, think: opts.resolved.model?.capabilities.thinking === "no" ? undefined : false, signal: opts.signal },
+      budgetTokens: Math.floor(opts.capacity * (opts.withWeb ? 0.3 : 0.45)),
+      maxPassages: settings.retrievalMaxPassages,
+      onStep: (label) => opts.emit({ type: "documents_step", label }),
+    });
+    if (!result) return null;
+    opts.emit({ type: "documents", retrieval: { intent: result.intent, queries: result.queries, sources: result.passages.map(toSource), cited: null, checks: [], limitations: result.limitations } });
+    if (result.limitations.length) opts.emit({ type: "notice", code: "documents_partial", message: result.limitations[0] });
+    result.plan.filters.durationMs = Date.now() - started;
+    return result;
+  } catch (err) {
+    if (opts.signal.aborted) return null;
+    await logEvent("WARN", "documents", "Recherche documentaire impossible", { ...errorDetails(err), conversationId: conversation.id }, opts.userId);
+    opts.emit({ type: "notice", code: "documents_partial", message: "La recherche dans les documents du projet a échoué : la réponse ne s'appuie sur aucun document." });
+    return null;
+  }
+}
+
+function toSource(p: RetrievalResult["passages"][number]) {
+  const { content: _content, score: _score, ordinal: _ordinal, ...dto } = p;
+  return dto;
+}
+
+async function persistDocuments(messageId: string, docs: RetrievalResult, cited: number[], checks: Array<{ n: number; supported: boolean; score: number }>) {
+  const data = {
+    plan: docs.plan as unknown as Prisma.InputJsonValue,
+    queries: docs.queries.slice(0, 20),
+    // Extrait plus long que l'aperçu : la fiche de la source montre le passage transmis au modèle.
+    sources: docs.passages.map((p) => ({ ...toSource(p), excerpt: p.content.slice(0, 1500) })) as unknown as Prisma.InputJsonValue,
+    cited,
+    checks: checks as unknown as Prisma.InputJsonValue,
+    limitations: docs.limitations.slice(0, 20),
+    durationMs: typeof docs.plan.filters.durationMs === "number" ? docs.plan.filters.durationMs : null,
+  };
+  await db.documentRetrieval.upsert({ where: { messageId }, create: { messageId, ...data }, update: data });
 }
 
 const NO_RESULTS_NOTICE = `RECHERCHE WEB SANS RÉSULTAT PERTINENT : une recherche a été effectuée mais aucune page consultée ne répond à la question. Dis-le brièvement, puis réponds avec tes connaissances en précisant qu'elles n'ont pas été vérifiées et peuvent être dépassées. Ne mets aucun numéro de source.`;

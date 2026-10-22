@@ -8,7 +8,7 @@ import type { ChatMessage } from "@/lib/llm/types";
 import { compactConversation } from "@/lib/context/compact";
 import { buildActiveContext } from "@/lib/context/service";
 import type { SummarySections } from "@/lib/context/types";
-import { autoUpdateMemories } from "@/lib/memory/auto";
+import { analyzeMessage } from "@/lib/memory/auto";
 import { createUser, resetDb } from "../support/fixtures";
 
 const url = process.env.LLM_TEST_URL;
@@ -91,11 +91,12 @@ describe.skipIf(!url)(`Contexte avec un vrai moteur (${url ?? "non configuré"})
 
   it("enregistre une mémoire explicite et ignore le secret", async () => {
     const provider = new OllamaProvider({ kind: "OLLAMA", baseUrl: url!, timeoutMs: 120_000 });
-    const update = await autoUpdateMemories({
+    const update = await analyzeMessage({
       userId,
       conversationId: "conv-test",
-      userMessage: "Retiens que je déploie toujours mes applications avec Dokploy sur mon serveur local.",
-      answer: "C'est noté.",
+      projectId: null,
+      text: "Retiens que je déploie toujours mes applications avec Dokploy sur mon serveur local.",
+      sourceCreatedAt: new Date(),
       provider,
       model,
       think: undefined,
@@ -103,8 +104,8 @@ describe.skipIf(!url)(`Contexte avec un vrai moteur (${url ?? "non configuré"})
     console.info("mémoire :", JSON.stringify(update));
     const memories = await db.memory.findMany({ where: { userId } });
     expect(memories.some((m) => /dokploy/i.test(m.content))).toBe(true);
-    const secret = await autoUpdateMemories({ userId, conversationId: "conv-test", userMessage: "Mon mot de passe est azerty123, retiens-le.", answer: "", provider, model, think: undefined });
-    expect(secret?.rejected.length).toBe(1);
+    const secret = await analyzeMessage({ userId, conversationId: "conv-test", projectId: null, text: "Mon mot de passe est azerty123, retiens-le.", sourceCreatedAt: new Date(), provider, model, think: undefined });
+    expect(secret.rejected.length).toBe(1);
     expect(await db.memory.count({ where: { userId, content: { contains: "azerty" } } })).toBe(0);
   }, 120_000);
 });

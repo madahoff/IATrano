@@ -7,11 +7,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Field, Panel, Section } from "@/components/layout/page-shell";
 import { api, ApiError } from "@/lib/client/api";
 import type { ContextAdminView } from "@/lib/context/admin";
 import { WINDOW_SOURCE_LABELS } from "@/lib/context/window";
 
+const CONVERSATION_MODEL = "__conversation__";
 const fmt = (n: number) => n.toLocaleString("fr-FR");
 const errMsg = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
 
@@ -83,6 +85,25 @@ export function ContextSettingsView({ initial }: { initial: ContextAdminView }) 
             </div>
             <Switch id="mem-feature" checked={form.memoryFeatureEnabled} onCheckedChange={(v) => setForm({ ...form, memoryFeatureEnabled: v })} />
           </div>
+          <Field
+            label="Modèle d'analyse de la mémoire"
+            htmlFor="mem-model"
+            hint="Utilisé après les réponses pour repérer ce qui mérite d'être retenu, seulement quand un filtre sans modèle l'estime utile. Laissez « modèle de la conversation » ou choisissez un modèle plus léger pour réduire le coût."
+          >
+            <Select value={form.memoryModel || CONVERSATION_MODEL} onValueChange={(v) => setForm({ ...form, memoryModel: v === CONVERSATION_MODEL ? "" : v })}>
+              <SelectTrigger id="mem-model" className="w-full sm:w-80">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={CONVERSATION_MODEL}>Modèle de la conversation</SelectItem>
+                {[...new Set([...view.models.filter((m) => m.installed).map((m) => m.model), ...(form.memoryModel ? [form.memoryModel] : [])])].map((id) => (
+                  <SelectItem key={id} value={id}>
+                    {id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
           <div>
             <Button onClick={save} disabled={saving}>
               {saving ? <Loader2 className="animate-spin" /> : <Save />} Enregistrer

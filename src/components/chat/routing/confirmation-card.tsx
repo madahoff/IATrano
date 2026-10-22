@@ -1,25 +1,29 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Loader2, Signpost, X } from "lucide-react";
+import { Check, Signpost, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { MODE_EMOJI, MODE_LABELS, ROUTING_MODES, type RoutingMode } from "@/lib/routing/config";
+import { MODE_LABELS, ROUTING_MODES, type RoutingMode } from "@/lib/routing/config";
+import { ModeIcon } from "./mode-icon";
 import type { ConfirmationChoice, Outcomes } from "@/lib/routing/decide";
 
 const pct = (p: number | null) => (p === null ? "" : ` (${Math.round(p * 100)} %)`);
 
-/** Indicateur pendant l'analyse de la demande par JEV. */
-export function RoutingProgress() {
-  return (
-    <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-      <Loader2 className="size-4 animate-spin" /> JEV analyse votre demande…
-    </p>
-  );
+/** Modes séparés par « · », chacun précédé de son icône. */
+function ModeList({ modes, outcomes }: { modes: RoutingMode[]; outcomes: Outcomes }) {
+  return modes.map((m, i) => (
+    <span key={m} className="whitespace-nowrap">
+      {i > 0 && " · "}
+      <ModeIcon mode={m} className="mr-1 inline size-3.5 align-[-0.15em]" />
+      {MODE_LABELS[m]}
+      {pct(outcomes[m].p)}
+    </span>
+  ));
 }
 
 /**
  * Carte affichée AVANT l'appel à Qwen quand JEV propose des modes à confirmer :
- * « JEV propose : 🧠 Réflexion approfondie (82 %) · 🔍 Recherche web (71 %) ».
+ * « JEV propose : Réflexion approfondie (82 %) · Recherche web (71 %) », chaque mode précédé de son icône.
  */
 export function RoutingConfirmationCard({
   outcomes,
@@ -40,7 +44,7 @@ export function RoutingConfirmationCard({
       <div className="flex items-start gap-2">
         <Signpost className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <p className="flex-1 text-sm font-medium">
-          JEV propose : {proposed.map((m) => `${MODE_EMOJI[m]} ${MODE_LABELS[m]}${pct(outcomes[m].p)}`).join(" · ")}
+          JEV propose : <ModeList modes={proposed} outcomes={outcomes} />
         </p>
         <Button variant="ghost" size="icon-sm" className="-mt-1 -mr-1 text-muted-foreground" onClick={onCancel} aria-label="Annuler l'envoi et modifier le message">
           <X />
@@ -52,8 +56,9 @@ export function RoutingConfirmationCard({
             <label className="flex cursor-pointer items-start gap-3 rounded-2xl bg-muted px-3 py-2.5 text-sm">
               <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={checked.includes(m)} onChange={() => toggle(m)} />
               <span className="min-w-0">
-                <span className="block font-medium">
-                  {MODE_EMOJI[m]} {MODE_LABELS[m]}
+                <span className="flex items-center gap-1.5 font-medium">
+                  <ModeIcon mode={m} className="size-3.5 shrink-0" />
+                  {MODE_LABELS[m]}
                   {pct(outcomes[m].p)}
                 </span>
                 <span className="block text-xs text-muted-foreground">{outcomes[m].reason}</span>
@@ -64,7 +69,7 @@ export function RoutingConfirmationCard({
       </ul>
       {already.length > 0 && (
         <p className="mt-2 px-1 text-xs text-muted-foreground">
-          Déjà activé : {already.map((m) => `${MODE_EMOJI[m]} ${MODE_LABELS[m]}${pct(outcomes[m].p)}`).join(" · ")}
+          Déjà activé : <ModeList modes={already} outcomes={outcomes} />
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">

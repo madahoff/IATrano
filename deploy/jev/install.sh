@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# Installation de JEV (jevos) sur le serveur Ubuntu 100.121.17.90.
-# À exécuter EN TANT QUE root sur le serveur : sudo bash install.sh
-# Le script est idempotent : on peut le relancer pour mettre à jour le code et le modèle.
+# Installation de jevos (JEV) sur le serveur Ubuntu 100.121.17.90.
+# Le dépôt amont distribue un binaire Linux et un modèle OpenVINO, pas un paquet Python.
 set -euo pipefail
 
 # --- Paramètres (surchargeables : sudo JEV_THREADS=8 bash install.sh) -------------------
-JEV_REPO_URL="${JEV_REPO_URL:-https://github.com/feder-cr/jev.git}"
-JEV_REF="${JEV_REF:-}"                         # tag ou commit à épingler (recommandé), vide = branche par défaut
+JEV_RELEASE="${JEV_RELEASE:-jevos-v5}"
 JEV_DIR="${JEV_DIR:-/opt/jev}"
 JEV_USER="${JEV_USER:-jev}"
-JEV_GGUF="${JEV_GGUF:-jevos-1b-q4_k_m.gguf}"
-# Vérifiez le nom exact de l'asset sur la page des releases avant la première installation.
-JEV_GGUF_URL="${JEV_GGUF_URL:-https://github.com/feder-cr/jev/releases/latest/download/${JEV_GGUF}}"
-JEV_GGUF_SHA256="${JEV_GGUF_SHA256:-}"         # empreinte attendue (fortement recommandé)
 JEV_HOST="${JEV_HOST:-100.121.17.90}"          # IP Tailscale : jamais 0.0.0.0
 JEV_PORT="${JEV_PORT:-8017}"
 JEV_THREADS="${JEV_THREADS:-12}"
+JEV_MODEL_ARCHIVE="${JEV_MODEL_ARCHIVE:-jevos-v5-openvino-int8.zip}"
+JEV_BINARY_URL="${JEV_BINARY_URL:-https://github.com/feder-cr/jev/releases/download/${JEV_RELEASE}/jev-linux-x64.tar.gz}"
+JEV_MODEL_URL="${JEV_MODEL_URL:-https://github.com/feder-cr/jev/releases/download/${JEV_RELEASE}/${JEV_MODEL_ARCHIVE}}"
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[31mErreur : %s\033[0m\n' "$*" >&2; exit 1; }
@@ -29,45 +26,36 @@ tailscale ip -4 | grep -qx "$JEV_HOST" || die "l'IP Tailscale de cette machine n
 
 log "Paquets système"
 apt-get update -qq
-apt-get install -y -qq git curl ca-certificates openssl >/dev/null
-
-log "Installation de uv (gestionnaire Python) dans /usr/local/bin"
-if ! command -v uv >/dev/null; then
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
-fi
-uv --version
+apt-get install -y -qq curl ca-certificates openssl unzip >/dev/null
 
 log "Utilisateur système « $JEV_USER »"
 id "$JEV_USER" >/dev/null 2>&1 || useradd --system --home-dir "$JEV_DIR" --shell /usr/sbin/nologin "$JEV_USER"
 
-log "Code source dans $JEV_DIR"
-if [[ -d "$JEV_DIR/.git" ]]; then
-  sudo -u "$JEV_USER" git -C "$JEV_DIR" fetch --tags --quiet
-  sudo -u "$JEV_USER" git -C "$JEV_DIR" pull --ff-only --quiet || true
-else
-  install -d -o "$JEV_USER" -g "$JEV_USER" "$JEV_DIR"
-  sudo -u "$JEV_USER" git clone --quiet "$JEV_REPO_URL" "$JEV_DIR"
-fi
-[[ -n "$JEV_REF" ]] && sudo -u "$JEV_USER" git -C "$JEV_DIR" checkout --quiet "$JEV_REF"
+install -d -o "$JEV_USER" -g "$JEV_USER" "$JEV_DIR"
 
-export UV_CACHE_DIR="$JEV_DIR/.cache/uv"
-run_as_jev() { sudo -u "$JEV_USER" env UV_CACHE_DIR="$UV_CACHE_DIR" HOME="$JEV_DIR" bash -c "cd '$JEV_DIR' && $*"; }
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/model"
+log "Téléchargement du binaire JEV ($JEV_RELEASE)"
+curl -fL --retry 3 -o "$tmp/jev-linux-x64.tar.gz" "$JEV_BINARY_URL"
+tar -xzf "$tmp/jev-linux-x64.tar.gz" -C "$tmp/bin"
+binary="$(find "$tmp/bin" -type f -name jev -perm -u+x -print -quit)"
+[[ -n "$binary" ]] || die "le binaire jev est absent de l'archive."
+# L'archive contient l'exécutable et les bibliothèques OpenVINO nécessaires
+# (notamment libopenvino.so.*) dans le même dossier. Ils doivent rester ensemble.
+runtime_dir="$(dirname "$binary")"
+cp -a "$runtime_dir"/. "$JEV_DIR"/
+chmod 0755 "$JEV_DIR/jev"
 
-log "Dépendances Python (uv sync)"
-run_as_jev "uv sync"
-
-log "Runtime d'inférence (uv run jev download --only runtime)"
-run_as_jev "uv run jev download --only runtime"
-
-log "Modèle $JEV_GGUF"
-if [[ ! -s "$JEV_DIR/$JEV_GGUF" ]]; then
-  run_as_jev "curl -fL --retry 3 -o '$JEV_GGUF.part' '$JEV_GGUF_URL' && mv '$JEV_GGUF.part' '$JEV_GGUF'"
-fi
-if [[ -n "$JEV_GGUF_SHA256" ]]; then
-  echo "$JEV_GGUF_SHA256  $JEV_DIR/$JEV_GGUF" | sha256sum -c - || die "empreinte SHA-256 du modèle incorrecte."
-else
-  echo "Empreinte du modèle (à conserver) : $(sha256sum "$JEV_DIR/$JEV_GGUF" | cut -d' ' -f1)"
-fi
+log "Téléchargement du modèle ($JEV_MODEL_ARCHIVE)"
+curl -fL --retry 3 -o "$tmp/model.zip" "$JEV_MODEL_URL"
+unzip -q "$tmp/model.zip" -d "$tmp/model"
+model_dir="$(find "$tmp/model" -type d -name model -print -quit)"
+[[ -n "$model_dir" ]] || die "le dossier model est absent de l'archive."
+rm -rf "$JEV_DIR/model"
+install -d "$JEV_DIR/model"
+cp -a "$model_dir"/. "$JEV_DIR/model"/
+chown -R "$JEV_USER:$JEV_USER" "$JEV_DIR"
 
 log "Fichier d'environnement /etc/jev/jev.env (droits 600)"
 install -d -m 750 -o root -g "$JEV_USER" /etc/jev
@@ -81,7 +69,7 @@ chmod 600 /etc/jev/jev.env
 
 log "Service systemd « jev »"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-sed -e "s#@JEV_DIR@#$JEV_DIR#g" -e "s#@JEV_USER@#$JEV_USER#g" -e "s#@JEV_GGUF@#$JEV_GGUF#g" \
+sed -e "s#@JEV_DIR@#$JEV_DIR#g" -e "s#@JEV_USER@#$JEV_USER#g" \
     -e "s#@JEV_HOST@#$JEV_HOST#g" -e "s#@JEV_PORT@#$JEV_PORT#g" -e "s#@JEV_THREADS@#$JEV_THREADS#g" \
     "$SCRIPT_DIR/jev.service" > /etc/systemd/system/jev.service
 systemctl daemon-reload

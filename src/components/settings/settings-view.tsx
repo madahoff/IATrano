@@ -3,12 +3,17 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { Bot, Laptop, Loader2, LogOut, Monitor, Moon, Palette, Save, Server, Shield, Sun, User } from "lucide-react";
+import { Bot, Laptop, Loader2, LogOut, Monitor, Moon, Palette, Play, Save, Server, Shield, Sun, User, Volume1, Volume2, VolumeX } from "lucide-react";
 import { toast } from "sonner";
 import type { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { mascotAudio } from "@/components/mascot/sounds";
+import { useSoundPrefs } from "@/components/mascot/use-mascot-sounds";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Field, Panel, Section } from "@/components/layout/page-shell";
@@ -317,6 +322,7 @@ function AppearanceTab() {
   ];
   const map: Record<string, string> = { system: "SYSTEM", light: "LIGHT", dark: "DARK" };
   return (
+    <>
     <Section title="Thème" description="Le mode Système suit le réglage de votre appareil.">
       <div className="grid grid-cols-3 gap-2 sm:w-fit">
         {options.map(({ value, label, icon: Icon }) => {
@@ -341,6 +347,58 @@ function AppearanceTab() {
           );
         })}
       </div>
+    </Section>
+    <MascotSoundSection />
+    </>
+  );
+}
+
+/** Sons de la mascotte : propres à cet appareil, sans effet sur les animations. */
+function MascotSoundSection() {
+  const [prefs, setPrefs] = useSoundPrefs();
+  const mounted = useMounted();
+  const enabled = mounted && prefs.enabled;
+  const volume = Math.round(prefs.volume * 100);
+  return (
+    <Section
+      title="Sons de la mascotte"
+      description="Petits sons électroniques quand l'assistant se met au travail, lance une recherche Web ou termine une réponse. Réglage mémorisé sur cet appareil ; les animations restent actives sans le son."
+    >
+      <Panel className="flex flex-col gap-4 sm:max-w-md">
+        <div className="flex items-center justify-between gap-3">
+          <Label htmlFor="mascot-sound" className="flex items-center gap-2.5 font-medium">
+            {enabled ? <Volume2 className="size-4" /> : <VolumeX className="size-4 text-muted-foreground" />}
+            {enabled ? "Sons activés" : "Sons désactivés"}
+          </Label>
+          <Switch id="mascot-sound" checked={enabled} onCheckedChange={(on) => setPrefs({ ...prefs, enabled: on })} />
+        </div>
+        <div className="flex items-center gap-3">
+          <Volume1 className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <Slider
+            aria-label="Volume des sons de la mascotte"
+            min={0}
+            max={100}
+            step={5}
+            value={[volume]}
+            disabled={!enabled}
+            onValueChange={([v]) => setPrefs({ ...prefs, volume: v / 100 })}
+          />
+          <span className="w-11 shrink-0 text-right text-sm text-muted-foreground tabular-nums">{volume} %</span>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-fit bg-background"
+          disabled={!enabled || volume === 0}
+          onClick={() => {
+            mascotAudio.activate();
+            mascotAudio.setPrefs(prefs);
+            mascotAudio.play("done");
+          }}
+        >
+          <Play /> Écouter
+        </Button>
+      </Panel>
     </Section>
   );
 }

@@ -9,7 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useApp } from "@/components/layout/app-context";
 import { useShell } from "@/components/layout/chat-shell";
-import { Logo } from "@/components/common/logo";
+import { Mascot } from "@/components/mascot/mascot";
+import { AssistantPresence } from "@/components/mascot/assistant-presence";
+import { useMascot } from "@/components/mascot/use-mascot";
+import { useMascotSounds } from "@/components/mascot/use-mascot-sounds";
+import { mascotAudio } from "@/components/mascot/sounds";
 import { api } from "@/lib/client/api";
 import type { MessageDTO } from "@/lib/chat/protocol";
 import { fallbackTitle } from "@/lib/llm/prompt";
@@ -25,10 +29,12 @@ import { ArtifactPanel } from "./artifacts/artifact-panel";
 import { toArtifactRef, type ArtifactDTO } from "@/lib/artifacts/types";
 import { cn } from "@/lib/utils";
 import { AuthModeSelector, ModeButtons, RoutingHelp } from "./routing/mode-controls";
-import { RoutingConfirmationCard, RoutingProgress } from "./routing/confirmation-card";
+import { RoutingConfirmationCard } from "./routing/confirmation-card";
 import { useRouting, type Dispatch } from "./routing/use-routing";
 import { ROUTING_MODES, type AuthMode, type RoutingMode } from "@/lib/routing/config";
 import type { Availability, Overrides } from "@/lib/routing/decide";
+
+const pokeMascot = () => mascotAudio.play("poke");
 
 type InitialConversation = { id?: string; title?: string; model?: string | null; webSearch?: boolean; projectId?: string | null; messages?: MessageDTO[] } | null;
 
@@ -242,6 +248,9 @@ export function ChatView({ conversation }: { conversation: InitialConversation }
   const last = chat.messages[lastIndex];
   const pending = routingFlow.pending;
   const empty = chat.messages.length === 0 && !pending;
+  // Mascotte : reflète uniquement les événements réels (routage JEV, flux de génération, erreurs).
+  const mascot = useMascot({ messages: chat.messages, isStreaming: chat.isStreaming, requestFailed: chat.requestFailed, routing: pending?.phase ?? null, model });
+  useMascotSounds(mascot);
 
   const items = useMemo(
     () =>
@@ -329,7 +338,7 @@ export function ChatView({ conversation }: { conversation: InitialConversation }
       <div ref={scrollRef} onScroll={onScroll} className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         {empty ? (
           <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-4 px-4 pb-10 text-center">
-            <Logo className="size-12" />
+            <Mascot state={mascot.state} phase={mascot.phase} gaze="full" onPoke={pokeMascot} className="size-40 md:size-52" priority />
             <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Comment puis-je vous aider ?</h1>
             {projectId && (
               <p className="flex items-center gap-1.5 text-sm font-medium">
@@ -352,13 +361,12 @@ export function ChatView({ conversation }: { conversation: InitialConversation }
                     {pending.action.content}
                   </div>
                 )}
-                {pending.phase === "analyzing" ? (
-                  <RoutingProgress />
-                ) : (
+                {pending.phase === "confirm" && (
                   <RoutingConfirmationCard outcomes={pending.proposal.outcomes} onConfirm={routingFlow.confirm} onCancel={routingFlow.cancel} />
                 )}
               </div>
             )}
+            <AssistantPresence mascot={mascot} />
           </div>
         )}
       </div>

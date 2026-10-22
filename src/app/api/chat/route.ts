@@ -24,6 +24,7 @@ const schema = z.object({
   webSearch: z.boolean().optional(),
   projectId: z.string().min(1).nullable().optional(),
   artifactKey: z.string().min(1).max(64).optional(),
+  documentIds: z.array(z.string().min(1).max(40)).max(100).optional(),
   routing: z
     .object({
       decisionId: z.string().min(1).max(64),

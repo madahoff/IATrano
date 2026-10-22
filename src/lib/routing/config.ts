@@ -21,7 +21,6 @@ export const MODE_LABELS: Record<RoutingMode, string> = {
   research: "Recherche web",
   interactive: "Interactif",
 };
-export const MODE_EMOJI: Record<RoutingMode, string> = { thinking: "🧠", research: "🔍", interactive: "✨" };
 export const MODE_SHORT: Record<RoutingMode, string> = { thinking: "Réflexion", research: "Recherche", interactive: "Interactif" };
 
 export const MODE_HELP: Record<RoutingMode, string> = {

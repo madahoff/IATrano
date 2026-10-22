@@ -105,7 +105,7 @@ export type ContextUsageDTO = {
   compaction: { status: "RUNNING" | "SUCCEEDED" | "FAILED" | null; at: string | null; error: string | null };
   /** Ce qui peut encore être compacté (messages anciens hors des derniers échanges conservés). */
   compactable: number;
-  memory: { enabled: boolean; injected: Array<{ id: string; kind: string; content: string }> };
+  memory: { enabled: boolean; injected: Array<{ id: string; kind: string; content: string; scope: "personal" | "project" }> };
 };
 
 export function contextState(percent: number, t: ContextThresholds): ContextState {

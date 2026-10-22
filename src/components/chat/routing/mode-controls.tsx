@@ -1,15 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Ban, Brain, Check, ChevronDown, CircleHelp, Globe, Signpost, Sparkles } from "lucide-react";
+import { Ban, Check, ChevronDown, CircleHelp, Signpost } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AUTH_MODE_HELP, AUTH_MODE_LABELS, AUTH_MODES, MODE_EMOJI, MODE_HELP, MODE_LABELS, MODE_SHORT, type AuthMode, type RoutingMode } from "@/lib/routing/config";
+import { AUTH_MODE_HELP, AUTH_MODE_LABELS, AUTH_MODES, MODE_HELP, MODE_LABELS, MODE_SHORT, type AuthMode, type RoutingMode } from "@/lib/routing/config";
 import type { Availability, Override, Overrides } from "@/lib/routing/decide";
 import { cn } from "@/lib/utils";
-
-const ICONS: Record<RoutingMode, React.ReactNode> = { thinking: <Brain />, research: <Globe />, interactive: <Sparkles /> };
+import { ModeIcon } from "./mode-icon";
 
 /** Sélecteur du mode d'autorisation (Automatique / Manuel / Hybride / Désactivé), toujours visible dans le chat. */
 export function AuthModeSelector({ value, onChange, disabled }: { value: AuthMode; onChange: (m: AuthMode) => void; disabled?: boolean }) {
@@ -102,7 +101,7 @@ function ModeButton({
               state === "off" && !manual && "text-muted-foreground/70 line-through decoration-1",
             )}
           >
-            {state === "off" && !manual ? <Ban /> : ICONS[mode]}
+            {state === "off" && !manual ? <Ban /> : <ModeIcon mode={mode} />}
             <span className="hidden sm:inline">{MODE_SHORT[mode]}</span>
             {state === "auto" && <span className="hidden rounded-full bg-background/70 px-1.5 text-[0.65rem] font-medium tracking-wide sm:inline">AUTO</span>}
           </Button>
@@ -152,8 +151,9 @@ export function RoutingHelp() {
           <ul className="mt-1.5 flex flex-col gap-1.5 text-muted-foreground">
             {(Object.keys(MODE_HELP) as RoutingMode[]).map((m) => (
               <li key={m}>
-                <span className="text-foreground">
-                  {MODE_EMOJI[m]} {MODE_LABELS[m]}
+                <span className="inline-flex items-center gap-1.5 align-middle text-foreground">
+                  <ModeIcon mode={m} className="size-3.5" />
+                  {MODE_LABELS[m]}
                 </span>{" "}
                 — {MODE_HELP[m]}
               </li>

@@ -23,6 +23,8 @@ const schema = z
     contextHighPct: z.number().int().min(10).max(99),
     contextAutoCompactPct: z.number().int().min(0).max(100),
     memoryFeatureEnabled: z.boolean(),
+    // "" ou null : modèle de la conversation
+    memoryModel: z.string().trim().max(200).nullable(),
   })
   .partial()
   .refine((d) => Object.keys(d).length > 0, "Aucune modification.");
@@ -37,7 +39,7 @@ export const PATCH = route(async (req) => {
   const window = data.contextDefaultWindow ?? current.contextDefaultWindow;
   const reserve = data.contextResponseReserve ?? current.contextResponseReserve;
   if (reserve > window / 2) throw badRequest("La réserve de réponse ne peut pas dépasser la moitié de la fenêtre.");
-  await db.appSettings.update({ where: { id: 1 }, data: { ...data, updatedById: user.id } });
+  await db.appSettings.update({ where: { id: 1 }, data: { ...data, ...(data.memoryModel !== undefined ? { memoryModel: data.memoryModel || null } : {}), updatedById: user.id } });
   await logEvent("INFO", "admin:context", "Réglages du contexte modifiés", data, user.id);
   return json(await getContextAdminView());
 });

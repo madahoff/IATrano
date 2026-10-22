@@ -24,11 +24,13 @@ Plateforme de chat IA **locale et auto-hébergée** : une interface moderne insp
 12. [Questions de précision](#questions-de-précision)
 13. [Recherche Web et RAG](#recherche-web-et-rag)
 14. [JEV : connexion et test](#jev--connexion-et-test)
-15. [Sécurité](#sécurité)
-16. [Migrations et maintenance](#migrations-et-maintenance)
-17. [Tests](#tests)
-18. [Dépannage](#dépannage)
-19. [Limites connues](#limites-connues)
+15. [Mascotte « Trano »](#mascotte--trano-)
+16. [Mémoire persistante](#mémoire-persistante)
+17. [Sécurité](#sécurité)
+18. [Migrations et maintenance](#migrations-et-maintenance)
+19. [Tests](#tests)
+20. [Dépannage](#dépannage)
+21. [Limites connues](#limites-connues)
 
 ---
 
@@ -557,6 +559,79 @@ Les versions sont stockées dans la table `Artifact`. Elles sont supprimées ave
 
 ---
 
+## Mascotte « Trano »
+
+L'assistant est représenté par Trano, une mascotte 3D animée en temps réel avec [three.js](https://threejs.org). Le modèle est construit en code dans [`src/components/mascot/engine.ts`](src/components/mascot/engine.ts) : superellipsoïdes lissées, matériaux PBR et éclairage d'environnement. Il n'y a donc aucun fichier GLB à télécharger.
+
+**Emplacements** : grande mascotte sur l'écran d'accueil, version compacte (cadrage sur la tête) sous le dernier échange avec un statut textuel — c'est l'unique indicateur d'activité de l'assistant, une seule instance par génération — et rendus fixes du même modèle pour le logo et l'icône de l'application.
+
+**Regard** (accueil) : les yeux suivent le pointeur rapidement, la tête et le corps plus lentement. Les inerties sont réglables (`eyeLag`, `headLag`) et les amplitudes bornées. Après 2,5 s sans mouvement, l'attention retombe et l'animation de repos reprend.
+- Les éléments marqués `data-mascot-attention` attirent le regard quand on les survole ou qu'on y tape : zone de saisie, choix du modèle, « Nouvelle conversation ».
+- Sur écran tactile, la mascotte regarde le point touché et jette des coups d'œil spontanés.
+- Un clic sur la mascotte déclenche une petite réaction.
+- Le pointeur est lu par le moteur, sans aucun rendu React.
+
+**Gestes de travail** : le modèle n'a pas de squelette, mais ses mains flottantes et de petits accessoires holographiques animés permettent ces gestes :
+- **clavier** pendant la rédaction : chaque fragment de texte reçu déclenche une frappe ; sans texte entrant, les mains restent en suspens ;
+- **page** qui défile pendant la lecture des sources ;
+- **orbe** examiné pendant l'analyse ;
+- **points en orbite** suivis du regard pendant le balayage.
+
+Les accessoires apparaissent et s'effacent en fondu, et sont rangés à la fin de la réponse.
+
+**Sons** ([`sounds.ts`](src/components/mascot/sounds.ts), [`sound-policy.ts`](src/lib/mascot/sound-policy.ts)) : petits sons synthétisés avec Web Audio (sinus et FM légère, passe-bas, gamme pentatonique commune), sans fichier audio.
+- **Événements sonorisés** : activation, réflexion, démarrage d'une recherche, tapotements pendant la rédaction, fin, erreur, question, clic sur la mascotte.
+- **Pas de chevauchement** : une seule voix à la fois, et le son suivant remplace le précédent en fondu.
+- **Tapotements** : de plus en plus espacés, puis plus aucun après 25 s de rédaction.
+- **Annulation** : elle coupe le son en cours.
+- **Lecture automatique** : aucun son au chargement ni avant une interaction avec la page.
+
+Réglages : Paramètres → Apparence → Sons de la mascotte (interrupteur, volume, bouton « Écouter »). Ils sont mémorisés sur l'appareil (`localStorage`, clé `iatrano.mascot.sound`).
+
+**États** ([`src/lib/mascot/state.ts`](src/lib/mascot/state.ts), fonction pure testée) : ils sont dérivés uniquement des événements réels du routage JEV et du flux `/api/chat`. Aucune minuterie ne simule d'activité.
+
+| État | Déclencheur réel | Animation |
+| --- | --- | --- |
+| `idle` | aucune activité, ou génération annulée | respiration, flottement, clignements, regard qui suit le pointeur |
+| `listening` | analyse JEV en cours, ou requête envoyée avant `start` | petit sursaut, tête tournée vers la saisie |
+| `thinking` | génération démarrée, aucun texte reçu | regard vers le haut, main au menton, lueur qui bat plus vite à chaque jeton de réflexion |
+| `searching` | étape de recherche `running` : requêtes, puis lecture (`fetch`), puis analyse (`select`/`context`) | balayage avec la main en visière, saccades de lecture, capteurs latéraux qui tournent, hochement à chaque étape terminée |
+| `generating` | texte (ou page interactive) en cours de réception | parole et gestes proportionnels au débit réel du flux |
+| `completed` | événement `done` observé pendant la session | yeux souriants et petit saut (2,2 s), puis retour au repos |
+| `error` | réponse en erreur, ou requête refusée avant démarrage | tête inclinée, yeux ambrés asymétriques, immobilité |
+| `asking` | carte de confirmation JEV, ou question de précision de l'IA | tête penchée, œil relevé, attente calme |
+
+**Performances et accessibilité** :
+- three.js (~140 Ko gzip) n'est téléchargé qu'à l'affichage du chat, dans un chunk séparé ;
+- une seule mascotte animée est affichée à la fois, avec 30 images/s en version compacte ;
+- le rendu s'arrête hors écran, et le contexte WebGL est libéré au démontage ;
+- sur un appareil modeste, la géométrie et la résolution sont réduites ;
+- avec `prefers-reduced-motion`, la mascotte affiche des poses fixes, mises à jour seulement au changement d'état ;
+- sans WebGL, ou si le contexte est perdu, une image fixe du même modèle s'affiche ;
+- la mascotte est décorative (`aria-hidden`) : l'état est toujours donné en texte, dans une région `aria-live`.
+
+**Images fixes** : `src/components/mascot/assets/trano.png`, `trano-bust.png` et `src/app/icon.png` sont des rendus du moteur. Après une modification du modèle, régénérez-les en appelant `renderStill()` sur un canevas de 512 px (cadrage `full`) et de 192 px (cadrage `bust`) avec un fond transparent.
+
+## Mémoire persistante
+
+L'IA retient d'elle-même les informations durables (préférences, outils, projets, décisions, contraintes) et les réutilise dans les conversations suivantes, y compris après un redémarrage. Tout est stocké en base (table `Memory`), par utilisateur, jamais dans le navigateur. Code : [`src/lib/memory`](src/lib/memory).
+
+**Trois niveaux** : mémoire personnelle (`projectId` nul, toutes les conversations), mémoire d'un projet (`projectId`, uniquement dans les conversations de ce projet, si sa mémoire est activée) et historique de la conversation (messages + résumé de compaction, voir `src/lib/context`). Les documents importés restent des sources RAG : ils ne deviennent jamais des souvenirs automatiquement.
+
+| Étape | Fichier | Rôle |
+| --- | --- | --- |
+| Extraction | [`extract.ts`](src/lib/memory/extract.ts) | Texte écrit par l'utilisateur seulement (citations `>`, code et documents collés retirés). Filtre sans modèle : un message sans indice durable (« quelle heure est-il ? ») n'est jamais analysé. Règles directes pour « oublie que… », « je préfère X plutôt que Y », « réponds-moi toujours en… », « tutoie-moi », « appelle-moi… ». Sinon, le modèle propose des actions JSON, chacune avec un extrait **cité** du message : sans preuve, pas de souvenir. |
+| Évaluation | [`evaluate.ts`](src/lib/memory/evaluate.ts) | Secrets toujours refusés ; informations sensibles (santé, convictions…) seulement sur demande explicite ; informations datées (« ce soir ») écartées ; importance minimale ; une hésitation devient une hypothèse (`UNCERTAIN`). |
+| Stockage / mise à jour | [`store.ts`](src/lib/memory/store.ts) | Transaction verrouillée par utilisateur. Déjà connu → renforcement (mentions, confirmé après 3). Même sujet exclusif (`topic`, ex. `gestionnaire-paquets`) ou correction → nouvelle version, l'ancienne passe `SUPERSEDED` (historique, jamais injectée). Plafond de 200 souvenirs actifs, éviction du souvenir automatique le moins utile. |
+| Récupération | [`select.ts`](src/lib/memory/select.ts) | Préférences toujours ; autres souvenirs selon la pertinence lexicale, l'importance, la fiabilité, le renforcement et la fraîcheur ; budget de 6 % de la capacité (96–600 tokens), entrées longues abrégées. Pas de moteur vectoriel. |
+| Consolidation | [`consolidate.ts`](src/lib/memory/consolidate.ts) | Fusion des doublons, un seul souvenir actif par sujet exclusif, purge de l'historique (> 180 j), des empreintes d'oubli (> 30 j) et des analyses terminées. |
+| File d'attente | [`jobs.ts`](src/lib/memory/jobs.ts) | Chaque analyse est enregistrée (`MemoryJob`) avant d'être exécutée après la réponse, sans la retarder. Échec du modèle → nouvelles tentatives (30 s, 2 min, 10 min) par la tâche de fond lancée dans `instrumentation.ts` ; tâches interrompues par un redémarrage reprises ; après 4 tentatives, les règles et les demandes explicites sont appliquées sans le modèle ; un échec définitif est visible et relançable dans **Mémoire**. |
+| Gestion | [`service.ts`](src/lib/memory/service.ts) | Consultation, correction, confirmation, oubli. Un oubli supprime le souvenir **et son historique** et laisse une empreinte hachée (`MemoryTombstone`, aucun texte en clair) qui empêche une analyse en attente de le recréer. |
+
+**Contrôle** : page **Mémoire** (menu utilisateur) — interrupteurs « Utiliser la mémoire » et « Enregistrement automatique » (désactivé, seules les demandes explicites « retiens / oublie » sont traitées), recherche, filtre par portée, historique des versions, consolidation, effacement total. Page d'un projet : sa mémoire. Dans le chat, une notification discrète n'apparaît que si la mémoire change réellement. Administration → Contexte : interrupteur général et **modèle d'analyse** (par défaut celui de la conversation ; un modèle plus léger réduit le coût).
+
+---
+
 ## Sécurité
 
 - Mots de passe hachés avec **scrypt** (N=2¹⁵, r=8, p=1, sel aléatoire) ; temps de réponse identique, que l'e-mail existe ou non.
@@ -614,6 +689,7 @@ TEST_DATABASE_URL=… LLM_TEST_URL=http://localhost:11434 LLM_TEST_MODEL=qwen2.5
 - **Unitaires** : analyse `<think>` et `<clarify>` en streaming, heuristique de clarification, protocole NDJSON, construction du contexte et des titres, scrypt, jetons, permissions, limitation de débit, validation d'URL, diagnostics réseau, adaptateurs Ollama et OpenAI (découverte, capacités, raisonnement, erreurs, annulation, délai d'inactivité, sorties structurées).
 - **Intégration** (vraie base, vrais handlers de routes ; seul le contexte de requête Next.js est simulé) : isolation des conversations, recherche, authentification, désactivation, limitation des connexions, CSRF, autorisations d'administration, protection du dernier super-administrateur, URL et clé d'API, orchestration du streaming avec un fournisseur factice (Thinking, clarifications valides et invalides, repli structuré, annulation, erreurs, modèle absent, réponse vide, édition et régénération, limitation de débit), bootstrap idempotent, cohérence schéma/migrations.
 - **Recherche Web** : unitaires ([`web-security.test.ts`](tests/unit/web-security.test.ts), [`citations.test.ts`](tests/unit/citations.test.ts), [`search-pipeline.test.ts`](tests/unit/search-pipeline.test.ts)) — classification IP, validation d'URL, DNS rebinding, contenus hostiles, citations, décision, requêtes, extraction, segmentation, classement ; les redirections malveillantes réelles (via httpbin.org) sont ignorées hors ligne. Intégration ([`web-search.test.ts`](tests/integration/web-search.test.ts)) : scénarios 1 à 8 dans `/api/chat` avec vraie base et vrai pipeline (moteur, téléchargements et LLM simulés).
+- **Mémoire** : unitaires ([`memory.test.ts`](tests/unit/memory.test.ts)) — filtre, règles, preuve, évaluation, portée, budget, empreintes d'oubli. Intégration ([`memory.test.ts`](tests/integration/memory.test.ts)) : les 12 critères d'acceptation de bout en bout via `/api/chat` (mémorisation automatique, redémarrage, nouvelle conversation, isolation, informations ponctuelles, préférence modifiée, projets, oubli, secrets, budget, panne de l'extraction et reprise). Avec un vrai modèle : [`memory-real.test.ts`](tests/integration/memory-real.test.ts) (`LLM_TEST_URL`, `LLM_TEST_MODEL`).
 - La base de test doit avoir un nom contenant « test » : elle est vidée entre les tests.
 
 ---

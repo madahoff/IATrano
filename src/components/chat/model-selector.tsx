@@ -25,6 +25,7 @@ export function ModelSelector({ value, onChange, disabled }: { value: string | n
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          data-mascot-attention
           variant="ghost"
           disabled={disabled}
           className={cn("h-9 max-w-[min(60vw,22rem)] gap-1.5 px-3 text-[0.95rem] font-semibold", (unavailable || (models && !reachable)) && "text-warning-foreground")}

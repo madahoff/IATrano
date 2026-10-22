@@ -14,6 +14,8 @@ export type ContextAdminView = {
     contextHighPct: number;
     contextAutoCompactPct: number;
     memoryFeatureEnabled: boolean;
+    /** Modèle de l'analyse automatique de la mémoire ("" = celui de la conversation). */
+    memoryModel: string;
   };
   models: Array<{
     model: string;
@@ -38,6 +40,7 @@ export async function getContextAdminView(): Promise<ContextAdminView> {
       contextHighPct: app.contextHighPct,
       contextAutoCompactPct: app.contextAutoCompactPct,
       memoryFeatureEnabled: app.memoryFeatureEnabled,
+      memoryModel: app.memoryModel ?? "",
     },
     reachable: snapshot.provider.reachable,
     models: ids.map((id) => {

@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { MODE_EMOJI, MODE_SHORT } from "@/lib/routing/config";
+import { MODE_SHORT } from "@/lib/routing/config";
+import { ModeIcon } from "./mode-icon";
 import type { ModeOutcome, RoutingSnapshot } from "@/lib/routing/decide";
 
 const pct = (p: number) => `${Math.round(p * 100)} %`;
@@ -36,7 +37,7 @@ function Tag({ outcome }: { outcome: ModeOutcome }) {
           onMouseLeave={() => setOpen(false)}
           className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
         >
-          <span aria-hidden>{MODE_EMOJI[outcome.mode]}</span>
+          <ModeIcon mode={outcome.mode} className="size-3.5" />
           {MODE_SHORT[outcome.mode]}
         </button>
       </PopoverTrigger>

@@ -40,7 +40,8 @@ export const VERDICT_LABELS: Record<Verdict, string> = {
   FAILED: "Échec",
 };
 
-export const STEP_ICONS: Record<StepStatus, string> = { ok: "✅", fail: "❌", skip: "⏭" };
+/** Statut d'une étape dans le rapport texte (mots plutôt que pictogrammes : lisible partout, y compris en terminal). */
+export const STEP_TAGS: Record<StepStatus, string> = { ok: "[OK]", fail: "[ÉCHEC]", skip: "[IGNORÉE]" };
 
 export function computeVerdict(steps: DiagnosticStep[]): Verdict {
   if (steps.some((s) => s.essential && s.status !== "ok")) return "FAILED";
@@ -76,11 +77,11 @@ export function formatReportText(report: DiagnosticReport): string {
   lines.push(`Verdict : ${VERDICT_LABELS[report.verdict]} (durée totale ${report.totalMs} ms)`, "");
   report.steps.forEach((s, i) => {
     const duration = s.durationMs === null ? "non exécutée" : `${s.durationMs} ms`;
-    lines.push(`${STEP_ICONS[s.status]} ${i + 1}. ${s.label} — ${duration}`);
+    lines.push(`${STEP_TAGS[s.status]} ${i + 1}. ${s.label} — ${duration}`);
     if (s.detail) lines.push(`   ${s.detail}`);
     if (s.error) lines.push(`   Cause : ${s.error}`);
     if (s.hint) lines.push(`   Que faire : ${s.hint}`);
-    for (const w of s.warnings ?? []) lines.push(`   ⚠ ${w}`);
+    for (const w of s.warnings ?? []) lines.push(`   Avertissement : ${w}`);
   });
   return lines.join("\n");
 }

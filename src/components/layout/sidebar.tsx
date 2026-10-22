@@ -212,6 +212,7 @@ export function Sidebar({ onClose, onCollapse }: { onClose?: () => void; onColla
 
       <div className="flex flex-col gap-1.5 px-3 pb-2">
         <Button
+          data-mascot-attention
           variant="ghost"
           className="h-10 justify-start gap-2.5 px-3 hover:bg-sidebar-accent"
           onClick={() => {

@@ -75,18 +75,21 @@ export function useContextUsage(opts: { conversationId: string | null; model: st
           }
           break;
         case "memory": {
+          // Retour discret : émis seulement quand la mémoire change réellement (jamais pour une information déjà connue).
           const parts = [
-            ev.saved.length ? `${ev.saved.length} ajoutée(s)` : "",
-            ev.updated.length ? `${ev.updated.length} mise(s) à jour` : "",
-            ev.removed ? `${ev.removed} oubliée(s)` : "",
+            ev.saved.length ? `${ev.saved.length} nouveau(x) souvenir(s)` : "",
+            ev.updated.length ? `${ev.updated.length} mis à jour` : "",
+            ev.removed ? `${ev.removed} oublié(s)` : "",
           ].filter(Boolean);
           if (parts.length) {
-            toast.success(`Mémoire : ${parts.join(", ")}`, {
-              description: [...ev.saved, ...ev.updated].slice(0, 2).join(" · ") || undefined,
+            toast.message(`Mémoire : ${parts.join(", ")}`, {
+              id: "memory-update",
+              description: [...ev.updated, ...ev.saved].slice(0, 2).join(" · ") || undefined,
+              duration: 5000,
               action: { label: "Gérer", onClick: () => window.open("/settings/memory", "_blank", "noopener") },
             });
           }
-          if (ev.rejected.length) toast.message(ev.rejected[0]);
+          else if (ev.rejected.length) toast.message(ev.rejected[0], { id: "memory-update", duration: 5000 });
           break;
         }
       }

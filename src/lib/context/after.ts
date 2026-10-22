@@ -1,20 +1,25 @@
 import "server-only";
 import type { ContextStreamEvent } from "@/lib/chat/protocol";
 import type { LlmProvider } from "@/lib/llm/types";
-import { autoUpdateMemories } from "@/lib/memory/auto";
+import { enqueueMemoryJob, processMemoryJob } from "@/lib/memory/jobs";
+import { hasVisibleChange } from "@/lib/memory/types";
+import { errorDetails, logEvent } from "@/lib/logger";
 import { compactConversation } from "./compact";
 import { computeContextUsage } from "./service";
 
 /**
  * Tâches lancées après une réponse terminée (le flux reste ouvert pour en informer l'interface) :
- * 1. mise à jour de la mémoire persistante si l'utilisateur a demandé de retenir ou d'oublier quelque chose ;
+ * 1. analyse du message pour la mémoire persistante : enregistrée en file d'attente (reprise après panne ou
+ *    redémarrage), puis exécutée immédiatement ; l'interface n'est avertie que d'un changement réel ;
  * 2. compaction automatique si le prochain prompt dépasse le seuil configuré.
  * Aucune de ces étapes ne peut faire échouer la réponse déjà enregistrée.
  */
 export async function afterResponse(opts: {
   userId: string;
   conversationId: string;
+  projectId: string | null;
   modelId: string;
+  userMessageId: string | null;
   userMessage: string;
   answer: string;
   provider: LlmProvider;
@@ -22,17 +27,18 @@ export async function afterResponse(opts: {
   signal: AbortSignal;
   emit: (event: ContextStreamEvent) => void;
 }) {
-  if (opts.signal.aborted) return;
-  const memory = await autoUpdateMemories({
-    userId: opts.userId,
-    conversationId: opts.conversationId,
-    userMessage: opts.userMessage,
-    answer: opts.answer,
-    provider: opts.provider,
-    model: opts.modelId,
-    think: opts.think,
-  });
-  if (memory) opts.emit({ type: "memory", ...memory });
+  // La fermeture de l'onglet n'annule pas l'analyse : la tâche est persistée et dispose de son propre délai.
+  try {
+    const job = opts.userMessageId
+      ? await enqueueMemoryJob({ userId: opts.userId, conversationId: opts.conversationId, messageId: opts.userMessageId, projectId: opts.projectId, model: opts.modelId, text: opts.userMessage })
+      : null;
+    if (job) {
+      const outcome = await processMemoryJob(job.id, { provider: opts.provider, think: opts.think });
+      if (outcome?.update && hasVisibleChange(outcome.update)) opts.emit({ type: "memory", ...outcome.update });
+    }
+  } catch (err) {
+    await logEvent("WARN", "memory:after", "Analyse de la mémoire non planifiée", errorDetails(err), opts.userId);
+  }
 
   if (opts.signal.aborted) return;
   try {

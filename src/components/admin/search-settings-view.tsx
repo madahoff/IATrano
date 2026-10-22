@@ -36,6 +36,7 @@ export function SearchSettingsView({ initial, inDocker, recentErrors }: { initia
   const [searxngUrl, setSearxngUrl] = useState(initial.searxngUrl);
   const [braveKey, setBraveKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
+  const [fallback, setFallback] = useState(initial.searchFallbackEnabled);
   const [maxResults, setMaxResults] = useState(String(initial.searchMaxResults));
   const [maxPages, setMaxPages] = useState(String(initial.searchMaxPages));
   const [timeoutSec, setTimeoutSec] = useState(String(Math.round(initial.searchTimeoutMs / 1000)));
@@ -60,6 +61,7 @@ export function SearchSettingsView({ initial, inDocker, recentErrors }: { initia
           webSearchAutoDefault: autoDefault,
           searchProvider: provider,
           searxngUrl,
+          searchFallbackEnabled: fallback,
           ...(clearKey ? { braveApiKey: "" } : braveKey ? { braveApiKey: braveKey } : {}),
           searchMaxResults: n.maxResults,
           searchMaxPages: n.maxPages,
@@ -86,7 +88,7 @@ export function SearchSettingsView({ initial, inDocker, recentErrors }: { initia
       setTest(
         await api<TestResult>("/api/admin/search/test", {
           method: "POST",
-          json: { searchProvider: provider, searxngUrl, query, ...(clearKey ? { braveApiKey: "" } : braveKey ? { braveApiKey: braveKey } : {}) },
+          json: { searchProvider: provider, searxngUrl, query, searchFallbackEnabled: fallback, ...(clearKey ? { braveApiKey: "" } : braveKey ? { braveApiKey: braveKey } : {}) },
         }),
       );
     } catch (err) {
@@ -118,7 +120,7 @@ export function SearchSettingsView({ initial, inDocker, recentErrors }: { initia
           <label className="flex items-center justify-between gap-4 rounded-2xl bg-muted px-4 py-3">
             <span>
               <span className="block text-sm font-medium">Recherche Web automatique par défaut</span>
-              <span className="block text-xs text-muted-foreground">État initial du bouton « Recherche » des nouvelles conversations (chaque utilisateur peut le changer).</span>
+              <span className="block text-xs text-muted-foreground">Ancien fonctionnement uniquement : avec le routage JEV, la recherche est décidée à chaque message (Administration → Routage et autorisations).</span>
             </span>
             <Switch checked={autoDefault} onCheckedChange={setAutoDefault} disabled={!enabled} />
           </label>
@@ -157,6 +159,26 @@ export function SearchSettingsView({ initial, inDocker, recentErrors }: { initia
                 {saved.hasBraveApiKey && <Button type="button" variant="ghost" onClick={() => { setClearKey(true); setBraveKey(""); }} disabled={clearKey}>Supprimer</Button>}
               </div>
             </Field>
+          )}
+          {provider === "SEARXNG" && (
+            <Panel className="flex flex-col gap-3">
+              <label className="flex items-center justify-between gap-4">
+                <span>
+                  <span className="block text-sm font-medium">Basculer sur Brave si SearXNG échoue</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Si SearXNG est injoignable, trop lent ou ne renvoie rien (moteurs amont bloqués), la même requête part vers l&apos;API Brave Search. Le basculement est signalé dans le détail de la recherche.
+                    {!saved.hasBraveApiKey && !saved.braveApiKeyFromEnv && " Inactif tant qu'aucune clé Brave n'est renseignée."}
+                  </span>
+                </span>
+                <Switch checked={fallback} onCheckedChange={setFallback} />
+              </label>
+              {fallback && <div className="[&_input]:bg-background"><Field label="Clé d'API Brave Search (secours)" htmlFor="brave" hint={keySource}>
+              <div className="flex gap-2">
+                <Input id="brave" type="password" autoComplete="off" value={braveKey} placeholder={saved.hasBraveApiKey && !clearKey ? "••••••••" : ""} onChange={(e) => { setBraveKey(e.target.value); setClearKey(false); }} />
+                {saved.hasBraveApiKey && <Button type="button" variant="ghost" onClick={() => { setClearKey(true); setBraveKey(""); }} disabled={clearKey}>Supprimer</Button>}
+              </div>
+            </Field></div>}
+            </Panel>
           )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Résultats par requête" htmlFor="maxr" hint="1 à 20 — candidats examinés.">

@@ -92,6 +92,12 @@ services:
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-searxng}
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      # JEV (modifiable ensuite dans Administration → Connexion JEV)
+      JEV_HOST: ${JEV_HOST:-100.121.17.90}
+      JEV_PORT: ${JEV_PORT:-8017}
+      JEV_PROTOCOL: ${JEV_PROTOCOL:-http}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      JEV_TIMEOUT_SEC: ${JEV_TIMEOUT_SEC:-10}
     # Permet au conteneur de joindre un moteur IA installé sur la machine hôte (Linux compris).
     extra_hosts:
       - "host.docker.internal:host-gateway"

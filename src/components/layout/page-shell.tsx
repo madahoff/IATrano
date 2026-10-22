@@ -9,11 +9,14 @@ export function PageShell({
   title,
   subtitle,
   nav,
+  headerExtra,
   children,
 }: {
   title: string;
   subtitle?: string;
   nav?: React.ReactNode;
+  /** Éléments alignés à droite de l'en-tête (ex. pastille d'état). */
+  headerExtra?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -29,6 +32,7 @@ export function PageShell({
           <p className="truncate text-sm leading-tight font-semibold">{title}</p>
           {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
         </div>
+        {headerExtra && <div className="ml-auto flex shrink-0 items-center gap-1">{headerExtra}</div>}
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         {nav && (

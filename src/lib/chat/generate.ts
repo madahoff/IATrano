@@ -29,6 +29,22 @@ import type { ResearchStep } from "@/lib/search/research-types";
 import { validateCitations } from "./citations";
 import { getOwnedProject } from "@/lib/projects/service";
 import type { ChatRequestBody, StreamEvent } from "./protocol";
+import { MODE_LABELS } from "@/lib/routing/config";
+import type { RoutingSnapshot } from "@/lib/routing/decide";
+import { cleanVisibleText, createArtifactExtractor } from "@/lib/artifacts/extract";
+import { ARTIFACT_EDIT_INSTRUCTIONS, ARTIFACT_INSTRUCTIONS, buildCurrentArtifactBlock } from "@/lib/artifacts/prompt";
+import { saveArtifactVersion } from "@/lib/artifacts/service";
+import { toArtifactRef } from "@/lib/artifacts/types";
+
+/** Modes décidés par le routage JEV pour cette réponse (null : ancien fonctionnement par interrupteurs). */
+export type RoutingPlan = {
+  snapshot: RoutingSnapshot;
+  research: boolean;
+  /** Mode interactif retenu : Qwen produit une page HTML autonome (artifact). */
+  interactive?: boolean;
+  /** Demande de modification d'une page existante : son code actuel est transmis à Qwen. */
+  artifactEdit?: { key: string; title: string; version: number; code: string } | null;
+} | null;
 
 type Emit = (event: StreamEvent) => void;
 
@@ -146,8 +162,10 @@ export async function runGeneration(opts: {
   modelId: string;
   signal: AbortSignal;
   emit: Emit;
+  routing?: RoutingPlan;
 }) {
   const { prepared, resolved, emit, signal } = opts;
+  const routing = opts.routing ?? null;
   const { conversation, assistantMessage } = prepared;
   const startedAt = Date.now();
   const prefs = await getEffectivePreferences(opts.userId);
@@ -163,6 +181,19 @@ export async function runGeneration(opts: {
     model: opts.modelId,
     thinking: resolved.thinkingEffective,
   });
+  if (routing) {
+    emit({ type: "routing", routing: routing.snapshot });
+    if (routing.snapshot.jevUnavailable) {
+      const on = routing.snapshot.outcomes.filter((o) => o.state === "on").map((o) => MODE_LABELS[o.mode].toLowerCase());
+      emit({
+        type: "notice",
+        code: "jev_unavailable",
+        message: on.length
+          ? `JEV est momentanément indisponible : modes appliqués d'office (${on.join(", ")}).`
+          : "JEV est momentanément indisponible : réponse simple, sans réflexion approfondie ni recherche.",
+      });
+    }
+  }
   if (resolved.notice) emit({ type: "notice", code: "thinking_unsupported", message: resolved.notice });
 
   let text = "";
@@ -183,7 +214,7 @@ export async function runGeneration(opts: {
 
   // --- Recherche Web (avant la génération ; ne bloque jamais la réponse en cas d'échec)
   const question = prepared.history.at(-1)?.content ?? "";
-  const web = await researchPhase({ userId: opts.userId, prepared, resolved, app: prefs.app, provider, modelId: opts.modelId, question, contextLength: window.window, signal, emit });
+  const web = await researchPhase({ userId: opts.userId, prepared, resolved, app: prefs.app, provider, modelId: opts.modelId, question, contextLength: window.window, signal, emit, routing });
   if (web?.result.status === "cancelled") {
     const durationMs = Date.now() - startedAt;
     await web.persist({ generation: "cancelled", cited: [], durationMs });
@@ -194,6 +225,8 @@ export async function runGeneration(opts: {
   const rag = web?.result.rag.length ? web.result.rag : null;
 
   const clarify = createClarifyExtractor();
+  const interactive = Boolean(routing?.interactive);
+  const artifactEdit = interactive ? (routing?.artifactEdit ?? null) : null;
   // Contexte actif : consignes + mémoire sélectionnée + résumé de compaction + messages récents (voir src/lib/context).
   const ctx = await buildActiveContext({
     userId: opts.userId,
@@ -203,7 +236,8 @@ export async function runGeneration(opts: {
     modelInfo: resolved.model,
     query: question,
     // Réponse documentée : pas de questions de précision, le format de citation prime.
-    clarifications: prefs.clarificationsEnabled && !web,
+    // Réponse documentée ou page interactive : pas de questions de précision (format de sortie imposé).
+    clarifications: prefs.clarificationsEnabled && !web && !interactive,
   });
   const messages = [...ctx.assembled.messages];
   if (web) {
@@ -215,6 +249,44 @@ export async function runGeneration(opts: {
       messages[messages.length - 1] = { role: "user", content: `${projectContext}${buildRagUserMessage(question, rag, new Date())}` };
     }
   }
+  if (interactive) {
+    messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${ARTIFACT_INSTRUCTIONS}${artifactEdit ? `\n\n${ARTIFACT_EDIT_INSTRUCTIONS}` : ""}` };
+    const last = messages.at(-1);
+    if (artifactEdit && last?.role === "user") {
+      messages[messages.length - 1] = { role: "user", content: `${buildCurrentArtifactBlock(artifactEdit)}\n\n${last.content}` };
+    }
+  }
+  // Le bloc <artifact> est retiré du texte affiché au fil du flux ; son code est collecté à part.
+  const artifactEx = createArtifactExtractor();
+  const produced: Array<{ title: string; code: string; complete: boolean }> = [];
+  let artifactChars = 0;
+  let lastProgress = 0;
+  const pushText = (raw: string) => {
+    // Hors mode interactif, le texte est transmis tel quel (aucune page n'est demandée à Qwen).
+    if (!interactive) return handleArtifactEvent({ type: "text", text: raw });
+    for (const ev of artifactEx.push(raw)) handleArtifactEvent(ev);
+  };
+  const handleArtifactEvent = (ev: ReturnType<typeof artifactEx.push>[number]) => {
+    if (ev.type === "text") {
+      const visible = clarify.push(ev.text);
+      if (visible) {
+        text += visible;
+        emit({ type: "text", delta: visible });
+      }
+    } else if (ev.type === "start") {
+      artifactChars = 0;
+      lastProgress = 0;
+      emit({ type: "artifact_start", title: ev.title });
+    } else if (ev.type === "code") {
+      artifactChars += ev.delta.length;
+      if (artifactChars - lastProgress >= 1500) {
+        lastProgress = artifactChars;
+        emit({ type: "artifact_progress", chars: artifactChars });
+      }
+    } else {
+      produced.push({ title: ev.title, code: ev.code, complete: ev.type === "end" });
+    }
+  };
 
   // Ajustement final au budget, documents Web compris : c'est ce prompt-là qui est envoyé et mesuré.
   const final = finalizeContext(messages, ctx.assembled, ctx.window.capacity);
@@ -250,11 +322,7 @@ export async function runGeneration(opts: {
         thinking += chunk.delta;
         emit({ type: "thinking", delta: chunk.delta });
       } else if (chunk.type === "text") {
-        const visible = clarify.push(chunk.delta);
-        if (visible) {
-          text += visible;
-          emit({ type: "text", delta: visible });
-        }
+        pushText(chunk.delta);
       }
       if (Date.now() - lastFlush > FLUSH_INTERVAL_MS) {
         lastFlush = Date.now();
@@ -262,6 +330,7 @@ export async function runGeneration(opts: {
       }
     }
     emit({ type: "context_measured", promptTokens: measured.prompt, completionTokens: measured.completion });
+    if (interactive) for (const ev of artifactEx.finish()) handleArtifactEvent(ev);
     const end = clarify.finish();
     if (end.text) {
       text += end.text;
@@ -273,6 +342,29 @@ export async function runGeneration(opts: {
     }
     if (clarification) emit({ type: "clarification", data: clarification });
     else if (end.malformed) emit({ type: "notice", code: "clarification_invalid", message: "Le modèle a proposé des questions de précision dans un format invalide ; elles ont été ignorées." });
+    // Pages interactives : enregistrées comme nouvelle version (modification) ou nouvel artifact.
+    if (produced.length) {
+      text = cleanVisibleText(text);
+      for (const [i, a] of produced.entries()) {
+        const saved = await saveArtifactVersion({
+          conversationId: conversation.id,
+          messageId: assistantMessage.id,
+          title: a.title,
+          code: a.code,
+          complete: a.complete,
+          key: i === 0 ? artifactEdit?.key : null,
+          origin: i === 0 && artifactEdit ? "EDITED" : "GENERATED",
+        });
+        emit({ type: "artifact", artifact: toArtifactRef(saved), content: text });
+        if (!saved.valid) emit({ type: "notice", code: "artifact_invalid", message: `La page « ${saved.title} » est inutilisable en l'état (${saved.issues[0]?.toLowerCase() ?? "code invalide"}). Ouvrez-la pour la faire corriger.` });
+      }
+    } else if (interactive) {
+      emit({
+        type: "notice",
+        code: "artifact_missing",
+        message: artifactEdit ? "Qwen n'a pas renvoyé de nouvelle version de la page interactive." : "Qwen n'a pas produit de page interactive pour cette réponse.",
+      });
+    }
     if (resolved.thinkingEffective && !thinking) {
       emit({ type: "notice", code: "thinking_not_returned", message: "Le fournisseur n'a renvoyé aucun flux de réflexion distinct pour cette réponse." });
     }
@@ -289,7 +381,7 @@ export async function runGeneration(opts: {
     }
     const durationMs = Date.now() - startedAt;
     await web?.persist({ generation: "done", cited, durationMs });
-    if (!text.trim() && !clarification) {
+    if (!text.trim() && !clarification && produced.length === 0) {
       const message = thinking ? "Le modèle a réfléchi mais n'a produit aucune réponse finale." : "Le modèle a renvoyé une réponse vide.";
       emit({ type: "notice", code: "empty_response", message });
       await persist({ content: text, thinking: thinking || null, status: "ERROR", error: message, durationMs, ...usageData() });
@@ -352,21 +444,25 @@ async function researchPhase(opts: {
   contextLength: number;
   signal: AbortSignal;
   emit: Emit;
+  routing: RoutingPlan;
 }): Promise<ResearchPhase | null> {
-  const { prepared, app, emit } = opts;
-  if (!app.webSearchEnabled || !prepared.conversation.webSearch || !opts.question.trim()) return null;
+  const { prepared, app, emit, routing } = opts;
+  if (!app.webSearchEnabled || !opts.question.trim()) return null;
+  // Avec routage JEV, seule la décision (JEV, utilisateur ou repli) compte ; sinon, le contrôle de la conversation.
+  if (routing ? !routing.research : !prepared.conversation.webSearch) return null;
   const previous = prepared.history.filter((m) => m.role === "ASSISTANT").at(-1);
   const previousUsedSearch = previous ? (await db.webSearch.count({ where: { messageId: previous.id, status: "DONE" } })) > 0 : false;
   const automaticDecision = decideSearch(opts.question, { previousUsedSearch });
-  // Le contrôle Recherche Web est une commande explicite de l'utilisateur :
-  // activé, il force une recherche même pour une question simple ou du code ;
-  // désactivé, le retour ci-dessus empêche toute recherche.
+  const routedOutcome = routing?.snapshot.outcomes.find((o) => o.mode === "research");
+  const routedReason = routedOutcome ? `Recherche web : ${routedOutcome.reason.charAt(0).toLowerCase()}${routedOutcome.reason.slice(1)}` : undefined;
+  // La recherche est décidée en amont (routage ou contrôle explicite de l'utilisateur) : elle est forcée,
+  // même pour une question que l'heuristique jugerait simple. L'heuristique ne sert qu'à qualifier la requête.
   const decision = automaticDecision.search
-    ? automaticDecision
+    ? { ...automaticDecision, reason: routedReason ?? automaticDecision.reason }
     : {
         search: true as const,
         mode: "auto" as const,
-        reason: "Recherche Web activée pour cette conversation.",
+        reason: routedReason ?? "Recherche Web activée pour cette conversation.",
         timeSensitive: false,
       };
   if (!decision.search) return null;

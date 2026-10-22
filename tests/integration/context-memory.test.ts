@@ -53,8 +53,9 @@ const adminModelsRoute = await import("@/app/api/admin/context/models/route");
 
 const model = (id: string, contextLength?: number): ModelInfo => ({ id, name: id, provider: "OLLAMA", contextLength, capabilities: { thinking: "no", tools: "no", vision: "no" } });
 
+// Ces scénarios portent sur le contexte : la recherche Web (testée dans web-search.test.ts) est coupée.
 async function chat(body: Record<string, unknown>) {
-  const res = await chatRoute.POST(jsonRequest("POST", "/api/chat", body), {});
+  const res = await chatRoute.POST(jsonRequest("POST", "/api/chat", { webSearch: false, ...body }), {});
   const events: StreamEvent[] = [];
   const text = await res.text();
   for (const line of text.split("\n")) if (line.trim()) events.push(JSON.parse(line));
@@ -87,7 +88,8 @@ async function seedLongConversation(userId: string, pairs = 8) {
   const conv = await db.conversation.create({ data: { userId, title: "Long", model: "qwen:3b" } });
   const t0 = Date.now() - 1_000_000;
   for (let i = 0; i < pairs; i++) {
-    await db.message.create({ data: { conversationId: conv.id, role: "USER", content: `Question ${i}. ${filler(i)}`, createdAt: new Date(t0 + i * 2000) } });
+    const intro = i === 0 ? "Je veux mettre en place le déploiement Dokploy de l'application. " : "";
+    await db.message.create({ data: { conversationId: conv.id, role: "USER", content: `Question ${i}. ${intro}${filler(i)}`, createdAt: new Date(t0 + i * 2000) } });
     await db.message.create({ data: { conversationId: conv.id, role: "ASSISTANT", content: `Réponse ${i}. ${filler(i)}${i === 1 ? "\nVoir https://docs.dokploy.com/install et compose.yaml" : ""}`, createdAt: new Date(t0 + i * 2000 + 1000) } });
   }
   return conv;
@@ -109,7 +111,7 @@ beforeEach(async () => {
 describe("compteur de contexte", () => {
   it("nouvelle conversation : fenêtre réelle imposée au moteur, consommation de base non nulle, estimation signalée", async () => {
     const { usage: u } = await usage(null);
-    expect(u).toMatchObject({ window: 8192, reserve: 1024, capacity: 7168, windowSource: "app-default", providerMax: 32768, estimated: true, state: "normal" });
+    expect(u).toMatchObject({ window: 32768, reserve: 1024, capacity: 31744, windowSource: "provider", providerMax: 32768, estimated: true, state: "normal" });
     expect(u!.used).toBeGreaterThan(50);
     expect(u!.parts.system).toBe(u!.usedRaw);
   });
@@ -117,9 +119,9 @@ describe("compteur de contexte", () => {
   it("après un message : num_ctx envoyé, mesure du fournisseur enregistrée, compteur recalibré et augmenté", async () => {
     state.promptTokens = 400;
     const events = await chat({ action: "send", content: "Bonjour, explique-moi Docker.", model: "qwen:3b", thinking: false });
-    expect(state.requests[0].numCtx).toBe(8192);
+    expect(state.requests[0].numCtx).toBe(32768);
     const ctxEv = events.find((e) => e.type === "context") as Extract<StreamEvent, { type: "context" }>;
-    expect(ctxEv).toMatchObject({ window: 8192, capacity: 7168, dropped: 0, rag: 0 });
+    expect(ctxEv).toMatchObject({ window: 32768, capacity: 31744, dropped: 0, rag: 0 });
     expect(events.find((e) => e.type === "context_measured")).toMatchObject({ promptTokens: 400, completionTokens: 4 });
     const start = events[0] as Extract<StreamEvent, { type: "start" }>;
     const msg = await db.message.findUniqueOrThrow({ where: { id: start.assistantMessageId } });
@@ -181,7 +183,7 @@ describe("compaction", () => {
     expect(after.messages.summarized).toBeGreaterThan(0);
     expect(after.used).toBeLessThan(before.used);
     // Le résumé est demandé avec la même fenêtre que les réponses.
-    expect(state.jsonCalls[0].numCtx).toBe(8192);
+    expect(state.jsonCalls[0].numCtx).toBe(32768);
     const conv2 = await db.conversation.findUniqueOrThrow({ where: { id: conv.id } });
     expect(conv2.compactionStatus).toBe("SUCCEEDED");
   });
@@ -193,7 +195,8 @@ describe("compaction", () => {
     const sent = state.requests[0].messages;
     expect(sent[0].content).toContain(SUMMARY_HEADER);
     expect(sent[0].content).toContain("Base PostgreSQL 16 dans Docker");
-    expect(sent.map((m) => m.content).join("\n")).not.toContain("Question 0.");
+    // Les anciens tours ne sont plus envoyés comme messages (seules leurs demandes sont citées dans le résumé).
+    expect(sent.slice(1).some((m) => m.content.startsWith("Question 0."))).toBe(false);
     expect(sent.at(-1)?.content).toBe("Et maintenant ?");
     expect(sent.some((m) => m.content.startsWith("Réponse 7."))).toBe(true);
   });

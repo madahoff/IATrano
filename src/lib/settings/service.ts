@@ -3,7 +3,7 @@ import type { AppSettings, ProviderType } from "@prisma/client";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { normalizeBaseUrl } from "@/lib/llm/url";
-import { isSearchConfigured, searchConfigFrom } from "@/lib/search/providers";
+import { hasSearchFallback, isSearchConfigured, searchConfigFrom } from "@/lib/search/providers";
 import type { ProviderConfig } from "@/lib/llm/types";
 
 const DEFAULT_URLS: Record<ProviderType, string> = {
@@ -79,6 +79,9 @@ export function publicAppSettings(s: AppSettings) {
     hasBraveApiKey: Boolean(s.braveApiKey),
     braveApiKeyFromEnv: Boolean(env().BRAVE_SEARCH_API_KEY),
     searchConfigured: isSearchConfigured(searchConfigFrom(s)),
+    searchFallbackEnabled: s.searchFallbackEnabled,
+    /** Secours Brave réellement actif (activé ET clé disponible). */
+    searchFallbackActive: hasSearchFallback(searchConfigFrom(s)),
     searchMaxResults: s.searchMaxResults,
     searchMaxPages: s.searchMaxPages,
     searchTimeoutMs: s.searchTimeoutMs,

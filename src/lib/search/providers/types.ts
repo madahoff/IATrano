@@ -10,6 +10,10 @@ export type SearchResult = {
   /** Date fournie par le moteur, si elle existe (jamais déduite). */
   publishedAt: string | null;
   engine?: string;
+  /** Résultat fourni par le moteur de secours (voir providers/fallback.ts). */
+  via?: SearchProviderKind;
+  /** Pourquoi le moteur principal n'a pas été utilisé. */
+  fallbackReason?: string;
 };
 
 export type SearchOptions = {

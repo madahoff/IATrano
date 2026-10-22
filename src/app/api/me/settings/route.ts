@@ -9,6 +9,7 @@ const schema = z.object({
   clarificationsEnabled: z.boolean().nullable().optional(),
   webSearchDefault: z.boolean().nullable().optional(),
   theme: z.enum(["SYSTEM", "LIGHT", "DARK"]).optional(),
+  routingAuthMode: z.enum(["AUTO", "MANUAL", "HYBRID", "OFF"]).nullable().optional(),
 });
 
 export const GET = route(async () => {

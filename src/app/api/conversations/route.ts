@@ -7,5 +7,6 @@ export const GET = route(async (req) => {
   const url = new URL(req.url);
   const q = url.searchParams.get("q")?.slice(0, 200) ?? undefined;
   const archived = url.searchParams.get("archived") === "1";
-  return json({ conversations: await listConversations(user.id, { q, archived }) });
+  const projectId = url.searchParams.get("projectId")?.slice(0, 64) || undefined;
+  return json({ conversations: await listConversations(user.id, { q, archived, projectId }) });
 });

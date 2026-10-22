@@ -32,6 +32,7 @@ const schema = z.object({
   searxngUrl: z.string().max(500).optional(),
   // undefined : inchangée ; "" : supprimer ; valeur : remplacer
   braveApiKey: z.string().max(200).optional(),
+  searchFallbackEnabled: z.boolean().optional(),
   searchMaxResults: z.number().int().min(1).max(20).optional(),
   searchMaxPages: z.number().int().min(1).max(8).optional(),
   searchTimeoutMs: z.number().int().min(5_000).max(60_000).optional(),
@@ -73,6 +74,7 @@ export const PATCH = route(async (req) => {
       searchProvider: input.searchProvider,
       searxngUrl,
       braveApiKey: input.braveApiKey === undefined ? undefined : input.braveApiKey.trim() || null,
+      searchFallbackEnabled: input.searchFallbackEnabled,
       searchMaxResults: input.searchMaxResults,
       searchMaxPages: input.searchMaxPages,
       searchTimeoutMs: input.searchTimeoutMs,

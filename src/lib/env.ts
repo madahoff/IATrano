@@ -27,6 +27,12 @@ const schema = z.object({
   // La valeur reste surchargeable par .env ou par la configuration administrateur.
   SEARXNG_URL: z.string().default("http://localhost:8888"),
   BRAVE_SEARCH_API_KEY: z.string().optional(),
+  // JEV (valeurs initiales ; l'administration peut les remplacer, la clé y est alors chiffrée en base)
+  JEV_HOST: z.string().default("100.121.17.90"),
+  JEV_PORT: z.coerce.number().int().min(1).max(65535).default(8017),
+  JEV_PROTOCOL: z.enum(["http", "https"]).default("http"),
+  JEV_API_KEY: z.string().optional(),
+  JEV_TIMEOUT_SEC: z.coerce.number().positive().max(300).default(10),
 });
 
 export type ServerEnv = z.infer<typeof schema> & { authSecret: string };

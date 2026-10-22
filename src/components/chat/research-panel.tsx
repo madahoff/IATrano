@@ -20,7 +20,7 @@ function headline(r: ResearchDTO): string {
       case "generate":
         return "Préparation de la réponse…";
       default:
-        return "Recherche sur le Web…";
+        return "Recherche en cours…";
     }
   }
   if (r.status === "failed") return "Recherche impossible";

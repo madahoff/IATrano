@@ -1,6 +1,9 @@
 // Protocole de streaming entre /api/chat et le navigateur : une ligne JSON par événement (NDJSON).
 // Partagé client/serveur — ne doit importer aucun module serveur.
 import { researchEventSchema, type ResearchDTO, type ResearchEvent } from "@/lib/search/research-types";
+import type { RoutingMode } from "@/lib/routing/config";
+import type { ConfirmationChoice, RoutingSnapshot } from "@/lib/routing/decide";
+import type { ArtifactRef } from "@/lib/artifacts/types";
 
 export type Clarification = { questions: Array<{ question: string; options: string[] }> };
 
@@ -15,8 +18,15 @@ export type StreamEvent =
       model: string;
       thinking: boolean;
     }
+  /** Modes appliqués à cette réponse (routage JEV) — émis juste après « start ». */
+  | { type: "routing"; routing: RoutingSnapshot }
   | { type: "thinking"; delta: string }
   | { type: "text"; delta: string }
+  /** Mode interactif : création d'une page (le code n'est pas diffusé dans le texte). */
+  | { type: "artifact_start"; title: string }
+  | { type: "artifact_progress"; chars: number }
+  /** Page enregistrée ; `content` remplace le texte reçu (bloc retiré et nettoyé). */
+  | { type: "artifact"; artifact: ArtifactRef; content: string }
   | { type: "clarification"; data: Clarification }
   | {
       type: "notice";
@@ -27,7 +37,10 @@ export type StreamEvent =
         | "empty_response"
         | "search_unavailable"
         | "citations_removed"
-        | "context_truncated";
+        | "context_truncated"
+        | "jev_unavailable"
+        | "artifact_missing"
+        | "artifact_invalid";
       message: string;
     }
   | ResearchEvent
@@ -87,6 +100,13 @@ export type ChatRequestBody = {
   /** État du contrôle « Recherche Web » de la conversation au moment de l'envoi. */
   webSearch?: boolean;
   projectId?: string | null;
+  /**
+   * Décision de routage obtenue via /api/chat/routing. Quand elle est présente, elle remplace
+   * `thinking` et `webSearch` : les modes appliqués sont ceux de la décision enregistrée côté serveur.
+   */
+  routing?: { decisionId: string; choice?: ConfirmationChoice; accepted?: RoutingMode[] };
+  /** Demande de modification de la page interactive ouverte (clé de l'artifact) : Qwen reçoit son code actuel. */
+  artifactKey?: string;
 };
 
 export type MessageDTO = {
@@ -102,6 +122,8 @@ export type MessageDTO = {
   durationMs: number | null;
   createdAt: string;
   research: ResearchDTO | null;
+  routing: RoutingSnapshot | null;
+  artifacts: ArtifactRef[];
 };
 
 export type ConversationSummary = {

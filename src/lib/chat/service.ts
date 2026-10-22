@@ -1,8 +1,11 @@
 import "server-only";
-import type { Conversation, Message, Prisma, WebSearch } from "@prisma/client";
+import type { Artifact, Conversation, Message, Prisma, WebSearch } from "@prisma/client";
 import { db } from "@/lib/db";
+import { getOwnedProject } from "@/lib/projects/service";
 import { notFound } from "@/lib/errors";
 import { clarificationSchema } from "@/lib/llm/clarify";
+import { parseSnapshot } from "@/lib/routing/decide";
+import { toArtifactRef } from "@/lib/artifacts/types";
 import { researchStepSchema, sourceSchema, type ResearchDTO } from "@/lib/search/research-types";
 import type { Clarification, ConversationSummary, MessageDTO } from "./protocol";
 
@@ -39,7 +42,7 @@ export function toResearchDTO(w: WebSearch, stale = false): ResearchDTO {
   };
 }
 
-export function toMessageDTO(m: Message & { webSearch?: WebSearch | null }): MessageDTO {
+export function toMessageDTO(m: Message & { webSearch?: WebSearch | null; artifacts?: Artifact[] }): MessageDTO {
   const clar = m.clarification ? clarificationSchema.safeParse(m.clarification) : null;
   // Un message resté « STREAMING » longtemps provient d'une génération interrompue (redémarrage, crash).
   const stale = m.status === "STREAMING" && Date.now() - m.updatedAt.getTime() > STALE_STREAM_MS;
@@ -56,6 +59,9 @@ export function toMessageDTO(m: Message & { webSearch?: WebSearch | null }): Mes
     durationMs: m.durationMs,
     createdAt: m.createdAt.toISOString(),
     research: m.webSearch ? toResearchDTO(m.webSearch, stale) : null,
+    routing: parseSnapshot(m.routing),
+    // Une carte par artifact : la version la plus récente produite par cette réponse (corrections comprises).
+    artifacts: [...new Map((m.artifacts ?? []).map((a) => [a.key, a] as const)).values()].map(toArtifactRef),
   };
 }
 
@@ -81,7 +87,7 @@ export async function getOwnedConversation(userId: string, id: string) {
 export async function getConversationWithMessages(userId: string, id: string) {
   const conv = await db.conversation.findFirst({
     where: { id, userId },
-    include: { messages: { orderBy: { createdAt: "asc" }, include: { webSearch: true } } },
+    include: { messages: { orderBy: { createdAt: "asc" }, include: { webSearch: true, artifacts: { orderBy: { version: "asc" } } } } },
   });
   if (!conv) return null;
   return { ...toSummary(conv), messages: conv.messages.map(toMessageDTO) };
@@ -97,13 +103,15 @@ function makeSnippet(content: string, q: string): string {
 
 export async function listConversations(
   userId: string,
-  opts: { q?: string; archived?: boolean; limit?: number } = {},
+  opts: { q?: string; archived?: boolean; limit?: number; projectId?: string } = {},
 ): Promise<ConversationSummary[]> {
   const q = opts.q?.trim();
   const limit = Math.min(opts.limit ?? 100, 200);
   const where: Prisma.ConversationWhereInput = {
     userId,
     archivedAt: opts.archived ? { not: null } : null,
+    // Filtre par projet : toujours combiné avec userId, donc limité aux projets de l'utilisateur.
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
   };
   if (q) {
     // Recherche dans les données persistées (titres + contenu des messages), accélérée par les index trigrammes.
@@ -136,6 +144,8 @@ export async function updateConversation(
   data: { title?: string; archived?: boolean; model?: string; webSearch?: boolean; projectId?: string | null },
 ) {
   await getOwnedConversation(userId, id);
+  // Rattachement à un projet : uniquement à un projet de l'utilisateur (sinon 404, comme pour une conversation d'autrui).
+  if (data.projectId) await getOwnedProject(userId, data.projectId);
   const updated = await db.conversation.update({
     where: { id },
     data: {

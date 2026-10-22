@@ -189,7 +189,15 @@ export async function runResearch(opts: {
     // Filtre de fraîcheur trop strict : nouvel essai sans restriction de date.
     if (results.length === 0 && decision.freshness) results = await search.search(q, { signal, count, timeoutMs: Math.min(remaining(), 12_000) });
     searchCache.set(key, results);
-    tracker.patch(id, { status: "done", count: results.length, detail: `${results.length} résultat(s)` });
+    const via = results.find((r) => r.via);
+    if (via) {
+      // Secours utilisé : signalé dans l'étape et dans les limites de la recherche (une seule fois).
+      const note = `${via.fallbackReason ?? "moteur principal indisponible"} : résultats fournis par Brave Search (secours).`;
+      if (!limitations.includes(note)) limitations.push(note);
+      tracker.patch(id, { status: "done", count: results.length, detail: `${results.length} résultat(s) via Brave Search (secours)` });
+    } else {
+      tracker.patch(id, { status: "done", count: results.length, detail: `${results.length} résultat(s)` });
+    }
     return results;
   };
   const settled = await Promise.allSettled(queries.map((q, i) => runQuery(q, i)));

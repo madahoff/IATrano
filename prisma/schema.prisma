@@ -157,6 +157,8 @@ model UserSettings {
   memoryEnabled         Boolean         @default(true)
   memoryAutoSave        Boolean         @default(true)
   theme                 ThemePreference @default(SYSTEM)
+  /// Mode d'autorisation du routage JEV choisi par l'utilisateur (null : valeur de l'administration)
+  routingAuthMode       RoutingAuthMode?
   updatedAt             DateTime        @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -185,6 +187,8 @@ model AppSettings {
   searxngUrl           String?
   // Clé Brave Search. Jamais renvoyée au navigateur.
   braveApiKey          String?
+  /// Basculer automatiquement sur Brave (si une clé est configurée) quand SearXNG échoue ou ne renvoie rien
+  searchFallbackEnabled Boolean           @default(true)
   searchMaxResults     Int                @default(8)
   searchMaxPages       Int                @default(4)
   searchTimeoutMs      Int                @default(20000)
@@ -216,6 +220,8 @@ model Conversation {
   // État du contrôle « Recherche Web automatique » de cette conversation (fixé à la création).
   webSearch      Boolean   @default(true)
   projectId      String?
+  /// Modes acceptés d'office pour cette conversation (« Toujours accepter pour cette conversation »)
+  routingAutoAccept String[] @default([])
   archivedAt     DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -229,9 +235,12 @@ model Conversation {
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  Message[]
   summaries ContextSummary[]
+  artifacts Artifact[]
   project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([userId, archivedAt, updatedAt(sort: Desc)])
+  // Conversations d'un projet (créé par la migration 20261022000000_projects_documents).
+  @@index([projectId, updatedAt(sort: Desc)])
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Conversation_title_trgm_idx")
 }
 
@@ -256,11 +265,14 @@ model Message {
   completionTokens Int?
   // Fenêtre et décomposition estimée du prompt réellement envoyé : { total, window, reserve, parts, dropped, ... }
   contextUsage     Json?
+  /// Modes appliqués à cette réponse et leur origine (JEV, utilisateur, repli) : voir src/lib/routing
+  routing          Json?
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   webSearch    WebSearch?
+  artifacts    Artifact[]
 
   @@index([conversationId, createdAt])
   @@index([content(ops: raw("gin_trgm_ops"))], type: Gin, map: "Message_content_trgm_idx")
@@ -441,4 +453,152 @@ model ErrorLog {
 
   @@index([createdAt(sort: Desc)])
   @@index([level, createdAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------
+// JEV : serveur de décisions oui/non (P(oui)) consulté par IATrano et par Qwen.
+// ---------------------------------------------------------------------
+
+enum JevProtocol {
+  HTTP
+  HTTPS
+}
+
+enum ConnectionTarget {
+  JEV
+  LLM
+  SEARCH
+}
+
+enum ConnectionVerdict {
+  OK
+  PARTIAL
+  FAILED
+}
+
+/// Configuration de la connexion à JEV (ligne unique id = 1). Valeurs initiales : variables JEV_* du .env.
+model JevSettings {
+  id               Int         @id @default(1)
+  host             String      @default("100.121.17.90")
+  port             Int         @default(8017)
+  protocol         JevProtocol @default(HTTP)
+  /// Clé d'API chiffrée (AES-256-GCM, clé dérivée de AUTH_SECRET). Jamais renvoyée au navigateur.
+  apiKeyEnc        String?
+  timeoutMs        Int         @default(10000)
+  defaultThreshold Float       @default(0.5)
+  updatedAt        DateTime    @updatedAt
+  updatedById      String?
+}
+
+/// Historique des tests de connexion (JEV, serveur LLM, recherche Web) ; seuls les 20 derniers par cible sont conservés.
+model ConnectionTestRun {
+  id        String            @id @default(cuid())
+  target    ConnectionTarget
+  verdict   ConnectionVerdict
+  latencyMs Int?
+  report    Json
+  userId    String?
+  createdAt DateTime          @default(now())
+
+  @@index([target, createdAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------
+// Routage par JEV : avant chaque réponse, JEV décide des modes (réflexion, recherche, interactif).
+// ---------------------------------------------------------------------
+
+enum RoutingAuthMode {
+  AUTO
+  MANUAL
+  HYBRID
+  OFF
+}
+
+enum RoutingDecisionStatus {
+  PENDING
+  APPLIED
+  DISCARDED
+}
+
+/// Réglages du routage (ligne unique id = 1).
+model RoutingSettings {
+  id              Int             @id @default(1)
+  /// Par mode : { question, threshold, rule } — validé par src/lib/routing/config.ts
+  modes           Json
+  defaultAuthMode RoutingAuthMode @default(HYBRID)
+  /// Mode hybride : au-dessus de ce seuil, activation sans confirmation
+  highThreshold   Float           @default(0.85)
+  /// Modes appliqués quand JEV est injoignable ([] : réponse simple)
+  fallbackModes   String[]        @default([])
+  /// Joindre un court résumé de l'échange précédent au message envoyé à JEV
+  includeContext  Boolean         @default(true)
+  updatedAt       DateTime        @updatedAt
+  updatedById     String?
+}
+
+/// Journal des décisions de routage (proposées, acceptées, refusées, forcées).
+model RoutingDecision {
+  id             String                @id @default(cuid())
+  userId         String
+  conversationId String?
+  /// Réponse produite avec cette décision
+  messageId      String?               @unique
+  excerpt        String
+  authMode       RoutingAuthMode
+  /// P(oui) par mode ; null si JEV n'a pas été consulté ou était injoignable
+  probabilities  Json?
+  /// Seuils et règles appliqués au moment de la décision
+  config         Json
+  /// État de chaque mode après décision (on/off/ask) et son origine
+  outcomes       Json
+  finalModes     String[]              @default([])
+  /// accept | reject | always (confirmation), null sans confirmation
+  userChoice     String?
+  status         RoutingDecisionStatus @default(PENDING)
+  jevModel       String?
+  jevLatencyMs   Int?
+  jevError       String?
+  createdAt      DateTime              @default(now())
+  appliedAt      DateTime?
+
+  @@index([createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------
+// Artifacts : pages HTML autonomes produites par Qwen en mode interactif (rendu isolé dans un iframe sandbox).
+// ---------------------------------------------------------------------
+
+enum ArtifactOrigin {
+  GENERATED
+  EDITED
+  REPAIRED
+}
+
+/// Une version d'artifact. Les versions d'un même artifact partagent la même clé (v1, v2, v3…).
+model Artifact {
+  id             String         @id @default(cuid())
+  conversationId String
+  /// Réponse qui a produit (ou dont la page a été réparée) cette version : supprimée avec elle.
+  messageId      String
+  key            String
+  version        Int
+  title          String
+  code           String
+  origin         ArtifactOrigin @default(GENERATED)
+  /// Problèmes détectés à l'enregistrement (page incomplète, ressources externes…)
+  issues         String[]       @default([])
+  /// Code exploitable (bloc complet, document HTML)
+  valid          Boolean        @default(true)
+  /// Dernière erreur d'exécution signalée par l'aperçu
+  runtimeError   String?
+  /// La réparation automatique (une seule) a déjà été tentée pour cette version
+  autoRepairUsed Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, key, version])
+  @@index([messageId])
 }

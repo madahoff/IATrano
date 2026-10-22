@@ -57,7 +57,8 @@ export function buildDocumentsBlock(sources: RagSource[]): string {
       .filter(Boolean)
       .join(" · ");
     const body = s.passages.map((p) => sanitizeDocText(p)).join("\n…\n");
-    return `[${s.n}] ${sanitizeDocText(s.title)} (${meta})\n${body}`;
+    // Titre, adresse et extraits : le modèle sait d'où vient chaque information (l'adresse n'est jamais à recopier, la liste des sources est affichée à part).
+    return `[${s.n}] ${sanitizeDocText(s.title)} (${meta})\nAdresse : ${sanitizeDocText(s.url)}\n${body}`;
   });
   return `<documents>\n${parts.join("\n\n")}\n</documents>`;
 }

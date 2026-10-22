@@ -5,6 +5,7 @@ import type { Role } from "@prisma/client";
 import { api } from "@/lib/client/api";
 import type { ConversationSummary } from "@/lib/chat/protocol";
 import type { ModelInfo, ProviderKind } from "@/lib/llm/types";
+import type { AuthMode, ModeRule, RoutingMode } from "@/lib/routing/config";
 
 export type ClientUser = { id: string; email: string; name: string; role: Role; isAdmin: boolean };
 
@@ -16,6 +17,7 @@ export type ModelsState = {
   appDefaultModel: string | null;
   thinkingDefault: boolean;
   webSearch: { available: boolean; enabled: boolean; default: boolean };
+  routing: { authMode: AuthMode; defaultAuthMode: AuthMode; rules: Record<RoutingMode, ModeRule>; interactiveAvailable: boolean };
 };
 
 type AppContextValue = {
@@ -64,6 +66,7 @@ export function AppProvider({
         appDefaultModel: prev?.appDefaultModel ?? null,
         thinkingDefault: prev?.thinkingDefault ?? false,
         webSearch: prev?.webSearch ?? { available: false, enabled: false, default: false },
+        routing: prev?.routing ?? { authMode: "HYBRID", defaultAuthMode: "HYBRID", rules: { thinking: "ALLOWED", research: "ALLOWED", interactive: "ALLOWED" }, interactiveAvailable: true },
       }));
     } finally {
       loadingRef.current = false;

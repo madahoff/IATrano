@@ -1,0 +1,35 @@
+# SearXNG sur le serveur 100.121.17.90, réservé à IATrano via Tailscale.
+# Dokploy : service de type « Compose » (voir README.md) ; ou en direct : docker compose up -d
+#
+# IMPORTANT : Docker contourne ufw pour les ports publiés. La protection repose donc sur
+# l'adresse d'écoute : le port n'est publié QUE sur l'IP Tailscale (jamais 0.0.0.0).
+services:
+  searxng:
+    # Épinglez une version précise en production (ex. searxng/searxng:2025.10.18-xxxxxxx).
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Définissez SEARXNG_SECRET (openssl rand -hex 32)}
+      SEARXNG_BASE_URL: http://${SEARXNG_HOST:-100.121.17.90}:${SEARXNG_PORT:-8888}/
+    ports:
+      - "${SEARXNG_HOST:-100.121.17.90}:${SEARXNG_PORT:-8888}:8080"
+    volumes:
+      # Dokploy : le fichier est créé dans « Advanced → Mounts » (File Mount, chemin settings.yml) et monté depuis ../files.
+      # Hors Dokploy : remplacez par ./settings.yml.
+      - ${SEARXNG_SETTINGS:-../files/settings.yml}:/etc/searxng/settings.yml:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

@@ -15,6 +15,7 @@ const schema = z.object({
   searchProvider: z.enum(["SEARXNG", "BRAVE"]).optional(),
   searxngUrl: z.string().max(500).optional(),
   braveApiKey: z.string().max(200).optional(),
+  searchFallbackEnabled: z.boolean().optional(),
   query: z.string().trim().min(2).max(200).default("actualités intelligence artificielle"),
 });
 
@@ -28,6 +29,7 @@ export const POST = route(async (req) => {
     searchProvider: input.searchProvider ?? saved.searchProvider,
     searxngUrl: input.searxngUrl === undefined ? saved.searxngUrl : input.searxngUrl || null,
     braveApiKey: input.braveApiKey === undefined ? saved.braveApiKey : input.braveApiKey || null,
+    searchFallbackEnabled: input.searchFallbackEnabled ?? saved.searchFallbackEnabled,
   });
   const start = Date.now();
   try {

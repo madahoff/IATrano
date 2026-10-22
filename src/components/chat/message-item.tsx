@@ -11,6 +11,8 @@ import { Markdown } from "./markdown";
 import { ThinkingBlock } from "./thinking-block";
 import { ResearchPanel } from "./research-panel";
 import { SourcesSummary } from "./sources";
+import { RoutingTags } from "./routing/routing-tags";
+import { ArtifactBuilding, ArtifactCard } from "./artifacts/artifact-card";
 import type { UIMessage } from "./use-chat";
 
 export const UserMessage = memo(function UserMessage({
@@ -95,12 +97,17 @@ export const AssistantMessage = memo(function AssistantMessage({
   isLast,
   busy,
   onRegenerate,
+  onOpenArtifact,
+  openArtifactKey,
   children,
 }: {
   message: UIMessage;
   isLast: boolean;
   busy: boolean;
   onRegenerate: (id: string) => void;
+  onOpenArtifact?: (id: string) => void;
+  /** Clé de l'artifact affiché dans le panneau (carte mise en évidence). */
+  openArtifactKey?: string | null;
   children?: React.ReactNode;
 }) {
   const streaming = message.status === "STREAMING";
@@ -113,19 +120,23 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <div className="group/msg flex flex-col">
+      {message.routing && <RoutingTags routing={message.routing} />}
       {research && <ResearchPanel research={research} answerStarted={hasText} />}
       {showThinking && <ThinkingBlock thinking={message.thinking!} active={streaming} answerStarted={hasText} />}
 
       {streaming && !hasText && !showThinking && !researching && (
-        <div className="flex h-7 items-center gap-1" aria-label="Génération en cours">
+        <div className="flex h-7 items-center gap-1" role="status">
           <span className="size-2 animate-pulse rounded-full bg-foreground/60" />
           <span className="size-2 animate-pulse rounded-full bg-foreground/40 [animation-delay:150ms]" />
           <span className="size-2 animate-pulse rounded-full bg-foreground/25 [animation-delay:300ms]" />
+          <span className="ml-2 text-sm text-muted-foreground">{message.thinkingEnabled ? "Qwen réfléchit…" : "Qwen rédige la réponse…"}</span>
         </div>
       )}
 
       {hasText && <Markdown content={message.content} sources={citeSources} streaming={streaming} />}
-      {streaming && hasText && <span className="mt-1 inline-block h-4 w-1.5 animate-pulse rounded-full bg-foreground/50" aria-hidden />}
+      {streaming && hasText && !message.artifactBuilding && <span className="mt-1 inline-block h-4 w-1.5 animate-pulse rounded-full bg-foreground/50" aria-hidden />}
+      {message.artifactBuilding && <ArtifactBuilding title={message.artifactBuilding.title} chars={message.artifactBuilding.chars} />}
+      {onOpenArtifact && message.artifacts.map((a) => <ArtifactCard key={a.key} artifact={a} active={a.key === openArtifactKey} onOpen={onOpenArtifact} />)}
 
       {message.notices
         .filter((n) => n.code !== "empty_response")

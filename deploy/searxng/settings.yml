@@ -1,0 +1,30 @@
+# Configuration SearXNG pour le serveur 100.121.17.90 (instance privée, consultée uniquement par IATrano).
+# IATrano interroge l'API JSON (/search?format=json) : le format json doit rester autorisé.
+# Le secret est fourni par la variable SEARXNG_SECRET (prioritaire sur server.secret_key).
+use_default_settings: true
+
+general:
+  instance_name: "IATrano SearXNG"
+  enable_metrics: false
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  default_lang: "fr-FR"
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "remplace-moi-par-SEARXNG_SECRET"
+  # Instance privée derrière Tailscale : pas de limiteur (il exigerait Valkey/Redis et bloquerait IATrano).
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0

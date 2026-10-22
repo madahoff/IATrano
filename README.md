@@ -23,11 +23,12 @@ Plateforme de chat IA **locale et auto-hébergée** : une interface moderne insp
 11. [Modèles, Thinking et capacités des fournisseurs](#modèles-thinking-et-capacités-des-fournisseurs)
 12. [Questions de précision](#questions-de-précision)
 13. [Recherche Web et RAG](#recherche-web-et-rag)
-14. [Sécurité](#sécurité)
-15. [Migrations et maintenance](#migrations-et-maintenance)
-16. [Tests](#tests)
-17. [Dépannage](#dépannage)
-18. [Limites connues](#limites-connues)
+14. [JEV : connexion et test](#jev--connexion-et-test)
+15. [Sécurité](#sécurité)
+16. [Migrations et maintenance](#migrations-et-maintenance)
+17. [Tests](#tests)
+18. [Dépannage](#dépannage)
+19. [Limites connues](#limites-connues)
 
 ---
 
@@ -297,6 +298,8 @@ Règles appliquées :
 - si le Thinking est demandé mais qu'aucun raisonnement distinct n'est renvoyé, un message l'indique. Aucune réflexion n'est jamais simulée ;
 - pour profiter du Thinking avec Ollama, utilisez un modèle qui le prend en charge, par exemple `ollama pull qwen3:4b` (≈ 2,5 Go, adapté à une RTX 4060 de 8 Go) ou `qwen3:1.7b` (≈ 1,4 Go). Ce point a été validé de bout en bout avec `qwen3:1.7b`.
 
+**Avec le routage JEV**, la réflexion est activée quand JEV la retient (ou quand l'utilisateur la force) et **désactivée sinon** (`think: false`), pour répondre plus vite. Le raisonnement n'est jamais mélangé à la réponse. Il est **replié par défaut** dans un bloc « Voir le raisonnement », et l'indicateur affiche « Qwen réfléchit… » pendant la réflexion.
+
 Gestion : **Administration → Serveur IA** pour actualiser la liste, définir le modèle et le Thinking par défaut, et modifier les instructions système. Chaque utilisateur peut remplacer ces défauts dans **Paramètres → IA**, puis par conversation (sélecteur) et par message (bouton Thinking).
 
 ---
@@ -384,6 +387,11 @@ Cache : en mémoire du processus uniquement (résultats et pages extraites, 15 m
 |---|---|---|
 | **SearXNG** (recommandé, gratuit, auto-hébergé) | `SEARXNG_URL` ou Administration → Recherche Web | Service `searxng` inclus dans `compose.yaml`, sans port publié. Le format `json` doit être autorisé ([`searxng/settings.yml`](searxng/settings.yml)). |
 | **Brave Search API** | `SEARCH_PROVIDER=brave` + `BRAVE_SEARCH_API_KEY` (ou saisie dans l'administration) | Offre gratuite limitée ; la clé n'est jamais renvoyée au navigateur ni journalisée. |
+| **SearXNG + secours Brave** (configuration retenue) | SearXNG principal + clé Brave + « Basculer sur Brave si SearXNG échoue » (activé par défaut) | Si SearXNG est injoignable, trop lent, en erreur ou **sans résultat**, la même requête part vers Brave. L'étape de recherche affiche « via Brave Search (secours) » et la raison figure dans les limites. Sans clé Brave, aucun secours. |
+
+**SearXNG sur le serveur 100.121.17.90** (via Dokploy, joignable uniquement par Tailscale sur le port 8888) : voir [`deploy/searxng/README.md`](deploy/searxng/README.md). Indiquez ensuite `http://100.121.17.90:8888` dans *Administration → Recherche Web* (ou dans `SEARXNG_URL`).
+
+Le test de *Administration → Connexion JEV → Service de recherche Web* vérifie SearXNG **seul**, puis le secours Brave dans une étape distincte, pour que le secours ne masque jamais une panne de SearXNG.
 
 Ajouter un moteur : implémenter `SearchProvider` (une méthode `search`) et l'enregistrer dans `providers/index.ts` (+ enum `SearchProviderType`).
 
@@ -426,6 +434,126 @@ docker compose -f compose.dev.yaml up -d
 2. Dans une nouvelle conversation (bouton **Recherche** actif), avec `qwen2.5:3b`, demandez : « Quelle est la dernière version de Next.js et quelles sont ses nouveautés ? ».
 3. Attendu : panneau « Recherche sur le Web… » avec les requêtes et les pages consultées (réussies/échouées), puis réponse avec marqueurs cliquables et rangée « N sources ». Rechargez la page : panneau et citations sont restitués à l'identique.
 4. Contre-épreuve : « Combien font 17 fois 23 ? » ne déclenche aucune recherche.
+
+---
+
+## JEV : connexion et test
+
+JEV (*jevos*) est un serveur de décisions oui/non : pour une question fermée en anglais, il renvoie P(oui) entre 0 et 1. Il tourne sur le serveur `100.121.17.90:8017` et n'est accessible que par Tailscale. Installation côté serveur, pare-feu et tableau des erreurs : [`deploy/jev/README.md`](deploy/jev/README.md).
+
+**Configuration** (*Administration → Connexion JEV*) :
+
+- Champs : hôte, port, protocole, clé API, délai d'attente et seuil par défaut. Les valeurs initiales viennent des variables `JEV_*` du `.env`, et *Rétablir les valeurs par défaut* y revient.
+- La clé API est chiffrée en base (AES-256-GCM, clé dérivée de `AUTH_SECRET`) et n'est jamais renvoyée au navigateur. À défaut, IATrano utilise `JEV_API_KEY` du `.env`. Si `AUTH_SECRET` change, il faut ressaisir la clé.
+- Une modification enregistrée s'applique immédiatement, sans redémarrage.
+
+**Test de connexion** : il est exécuté par le serveur IATrano et suit 7 étapes, chacune marquée ✅, ❌ ou ⏭ avec sa durée et, en cas d'échec, la cause et la correction.
+
+1. TCP
+2. `/health`
+3. `/v1/models`
+4. Authentification, en vérifiant aussi qu'une requête sans clé est refusée
+5. Décision de test (« Is this a billing problem? »)
+6. Routage de 3 messages d'exemple
+7. Performance (latence totale, inférence via `Server-Timing`, réseau)
+
+Le verdict est *opérationnelle*, *partielle* ou *échec*. *Copier le rapport* produit un texte brut où la clé est masquée. Les 20 derniers tests sont conservés. La même page teste le serveur LLM (complétion avec et sans thinking) et le service de recherche.
+
+**Pastille d'état** : elle s'affiche dans l'en-tête de l'administration et du chat.
+
+- Vert : JEV est prêt.
+- Orange : JEV répond mais le modèle n'est pas prêt.
+- Rouge : JEV est injoignable.
+
+Elle est rafraîchie toutes les 30 s via `/health`, et ce rafraîchissement peut être désactivé sur la page.
+
+Code : client [`src/lib/jev/client.ts`](src/lib/jev/client.ts), diagnostic [`src/lib/jev/diagnostics.ts`](src/lib/jev/diagnostics.ts), accès sans exception pour le reste de l'application [`src/lib/jev/service.ts`](src/lib/jev/service.ts).
+
+### Routage des modes par JEV
+
+Avant chaque réponse, IATrano envoie **une seule requête** à JEV. Elle contient :
+- le message de l'utilisateur ;
+- un court extrait de l'échange précédent, si l'option est activée ;
+- trois questions en anglais, une par mode :
+  - **🧠 Réflexion approfondie** : thinking de Qwen3 ;
+  - **🔍 Recherche web** : recherche avec sources citées ;
+  - **✨ Interactif** : demande une page HTML autonome et interactive, affichée dans le panneau artifacts.
+
+Chaque mode a son seuil, 0,6 par défaut, et les modes se combinent. L'état envoyé à JEV reste sous sa limite de 8 192 tokens.
+
+**Modes d'autorisation** : un sélecteur dans le chat, avec une valeur par défaut dans l'administration.
+
+| Mode | Comportement |
+|---|---|
+| Automatique | JEV décide et IATrano applique ; les modes utilisés restent affichés. |
+| Manuel | Chaque proposition passe par une carte de confirmation **avant** l'appel à Qwen : *Valider*, *Répondre sans ces modes*, *Toujours accepter pour cette conversation*. |
+| Hybride (défaut) | Activation directe si P(oui) ≥ seuil haut (0,85), confirmation entre le seuil et le seuil haut. |
+| Désactivé | JEV n'est pas consulté : l'utilisateur active les modes avec les boutons sous le champ de saisie. |
+
+**Règles de priorité** :
+- Les boutons 🧠 et 🔍 forcent ou désactivent un mode pour le prochain message, et ce choix prime sur JEV.
+- L'administration peut toutefois déclarer un mode *Interdit*, ou *Toujours confirmer* (y compris en automatique).
+- Si JEV est injoignable, les modes de repli configurés s'appliquent (par défaut : réponse simple) et un avis s'affiche. La conversation n'est jamais bloquée.
+
+**Affichage dans le chat** : chaque réponse porte ses étiquettes (🧠 Réflexion · 🔍 Recherche · ✨ Interactif). Au survol ou au clic, une étiquette précise l'origine : « Décidé par JEV (82 %) », « Choisi par vous »…
+
+**Journal** : chaque décision (proposée, acceptée, refusée, forcée ou de repli) est enregistrée dans la table `RoutingDecision`, avec :
+- les probabilités, les seuils et le mode d'autorisation ;
+- les modes retenus et le choix de l'utilisateur ;
+- le modèle JEV utilisé et la latence.
+
+**Réglages** (*Administration → Routage et autorisations*) :
+- les questions, les seuils et les règles de chaque mode ;
+- le mode d'autorisation par défaut et le seuil haut ;
+- les modes de repli ;
+- une **zone de test** qui affiche, pour un message saisi, les probabilités et la décision selon chacun des 4 modes d'autorisation.
+
+Code :
+- logique pure, sans E/S et testée : [`src/lib/routing/decide.ts`](src/lib/routing/decide.ts) ;
+- proposition et application : [`src/lib/routing/service.ts`](src/lib/routing/service.ts) ;
+- déroulé côté navigateur : [`use-routing.ts`](src/components/chat/routing/use-routing.ts).
+
+### Mode interactif (artifacts)
+
+Quand le mode **✨ Interactif** est retenu (par JEV ou par le bouton), Qwen écrit d'abord sa réponse. Il y ajoute une **page HTML autonome** dans un bloc délimité :
+
+```
+<artifact title="Titre court">
+<!doctype html><html lang="fr">… HTML + CSS + JS dans un seul fichier …</html>
+</artifact>
+```
+
+**Consignes données à Qwen** ([`src/lib/artifacts/prompt.ts`](src/lib/artifacts/prompt.ts)) :
+- aucune ressource externe ni requête réseau ;
+- page responsive, en français, accessible (libellés, clavier, contrastes) ;
+- aucune donnée inventée : les valeurs de démonstration sont présentées comme des exemples.
+
+**Pendant le flux** :
+- le bloc est retiré du texte au fil de l'eau ([`extract.ts`](src/lib/artifacts/extract.ts)) : le code n'apparaît jamais dans la conversation ;
+- une carte affiche « Création de l'interface… ».
+
+**Panneau latéral** (plein écran sur mobile) :
+- titre, onglets *Aperçu* et *Code* ;
+- versions **v1 / v2 / v3** ;
+- boutons agrandir, copier le code, télécharger le `.html` et fermer ;
+- une carte cliquable dans le fil rouvre la page.
+
+**Sécurité** ([`sandbox.ts`](src/lib/artifacts/sandbox.ts)) :
+- iframe `sandbox="allow-scripts"` **sans** `allow-same-origin` : origine opaque, donc ni cookies, ni stockage, ni accès à IATrano, ni formulaires, popups ou navigation ;
+- CSP injectée avant le code : `default-src 'none'`, `connect-src 'none'`… Aucune requête réseau n'est possible.
+
+Vérifié dans un navigateur réel : cookies, page parente et navigation bloqués (`SecurityError`), `fetch` et images externes bloqués sans qu'aucune requête soit émise. `localStorage` est remplacé par une mémoire temporaire pour que les pages ne plantent pas.
+
+**Erreurs** :
+- une erreur JavaScript ou une page invalide (incomplète, sans HTML) s'affiche clairement dans le panneau ;
+- **une seule correction automatique** est tentée par version : le code et l'erreur sont renvoyés à Qwen et la page corrigée devient la version suivante ;
+- ensuite, le bouton **Régénérer l'artifact** reste disponible.
+
+**Modifications** :
+- quand une page est ouverte, la zone de saisie propose « Modifier « Titre » vN » (actif par défaut, désactivable d'un clic) ;
+- la demande suivante (« agrandis le graphique ») transmet à Qwen le code actuel, et il renvoie une nouvelle version complète.
+
+Les versions sont stockées dans la table `Artifact`. Elles sont supprimées avec la réponse qui les a produites, par exemple lors d'une régénération.
 
 ---
 

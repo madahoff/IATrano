@@ -5,9 +5,15 @@ import { toast } from "sonner";
 import { readApiError } from "@/lib/client/api";
 import { createEventDecoder, type ChatRequestBody, type ContextStreamEvent, type MessageDTO, type StreamEvent } from "@/lib/chat/protocol";
 import type { ResearchDTO } from "@/lib/search/research-types";
+import type { ArtifactRef } from "@/lib/artifacts/types";
 
 export type Notice = { code: string; message: string };
-export type UIMessage = MessageDTO & { notices: Notice[]; hint?: string };
+export type UIMessage = MessageDTO & {
+  notices: Notice[];
+  hint?: string;
+  /** Page interactive en cours de création (mode interactif). */
+  artifactBuilding?: { title: string; chars: number } | null;
+};
 
 let tempSeq = 0;
 const tempId = (p: string) => `temp-${p}-${Date.now()}-${tempSeq++}`;
@@ -27,6 +33,8 @@ function emptyAssistant(model: string, thinking: boolean): UIMessage {
     createdAt: new Date().toISOString(),
     notices: [],
     research: null,
+    routing: null,
+    artifacts: [],
   };
 }
 
@@ -48,6 +56,8 @@ type Callbacks = {
   onContextEvent?: (event: ContextStreamEvent) => void;
   /** Fin du flux, post-traitements compris (titre, mémoire, compaction). */
   onStreamEnd?: () => void;
+  /** Nouvelle page interactive enregistrée (ouverture automatique du panneau). */
+  onArtifact?: (artifact: ArtifactRef, messageId: string) => void;
 };
 
 export function useChat(initial: { conversationId: string | null; messages: MessageDTO[] }, callbacks: Callbacks) {
@@ -146,6 +156,21 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
               if (newConv) cbRef.current.onConversationCreated?.(ev.conversationId, body.content ?? "");
               break;
             }
+            case "routing":
+              patchAssistant((m) => ({ ...m, routing: ev.routing }));
+              break;
+            case "artifact_start":
+              flush();
+              patchAssistant((m) => ({ ...m, artifactBuilding: { title: ev.title, chars: 0 } }));
+              break;
+            case "artifact_progress":
+              patchAssistant((m) => (m.artifactBuilding ? { ...m, artifactBuilding: { ...m.artifactBuilding, chars: ev.chars } } : m));
+              break;
+            case "artifact":
+              flush();
+              patchAssistant((m) => ({ ...m, content: ev.content, artifactBuilding: null, artifacts: [...m.artifacts.filter((a) => a.key !== ev.artifact.key), ev.artifact] }));
+              cbRef.current.onArtifact?.(ev.artifact, assistantId);
+              break;
             case "thinking":
               pendingThinking += ev.delta;
               schedule();
@@ -171,6 +196,7 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
                 status: m.status === "ERROR" ? "ERROR" : ev.status,
                 durationMs: ev.durationMs,
                 content: m.content.trim(),
+                artifactBuilding: null,
                 research: ev.status === "CANCELLED" ? closeResearch(m.research, "cancelled", "Annulé") : m.research,
               }));
               if (convRef.current) cbRef.current.onActivity?.(convRef.current);
@@ -262,8 +288,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const send = useCallback(
-    (content: string, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null) =>
-      run({ action: "send", conversationId: convRef.current ?? undefined, content, model, thinking, webSearch, projectId }, (prev) => [
+    (content: string, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null, routing?: ChatRequestBody["routing"], artifactKey?: string) =>
+      run({ action: "send", conversationId: convRef.current ?? undefined, content, model, thinking, webSearch, projectId, routing, artifactKey }, (prev) => [
         ...prev,
         {
           id: tempId("u"),
@@ -279,6 +305,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
           createdAt: new Date().toISOString(),
           notices: [],
           research: null,
+          routing: null,
+          artifacts: [],
         },
         emptyAssistant(model, thinking),
       ]),
@@ -286,8 +314,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const regenerate = useCallback(
-    (assistantMessageId: string | undefined, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null) =>
-      run({ action: "regenerate", conversationId: convRef.current ?? undefined, messageId: assistantMessageId, model, thinking, webSearch, projectId }, (prev) => {
+    (assistantMessageId: string | undefined, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null, routing?: ChatRequestBody["routing"]) =>
+      run({ action: "regenerate", conversationId: convRef.current ?? undefined, messageId: assistantMessageId, model, thinking, webSearch, projectId, routing }, (prev) => {
         const idx = assistantMessageId ? prev.findIndex((m) => m.id === assistantMessageId) : prev.findLastIndex((m) => m.role === "ASSISTANT");
         const kept = idx >= 0 ? prev.slice(0, idx) : prev;
         return [...kept, emptyAssistant(model, thinking)];
@@ -296,8 +324,8 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   );
 
   const edit = useCallback(
-    (userMessageId: string, content: string, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null) =>
-      run({ action: "edit", conversationId: convRef.current ?? undefined, messageId: userMessageId, content, model, thinking, webSearch, projectId }, (prev) => {
+    (userMessageId: string, content: string, model: string, thinking: boolean, webSearch: boolean, projectId?: string | null, routing?: ChatRequestBody["routing"], artifactKey?: string) =>
+      run({ action: "edit", conversationId: convRef.current ?? undefined, messageId: userMessageId, content, model, thinking, webSearch, projectId, routing, artifactKey }, (prev) => {
         const idx = prev.findIndex((m) => m.id === userMessageId);
         const kept = prev.slice(0, idx + 1).map((m) => (m.id === userMessageId ? { ...m, content } : m));
         return [...kept, emptyAssistant(model, thinking)];
@@ -307,5 +335,13 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
 
-  return { messages, conversationId, isStreaming, send, regenerate, edit, stop };
+  /** Identifiant de la conversation courante (lecture synchrone, à jour avant le prochain rendu). */
+  const currentConversationId = useCallback(() => convRef.current, []);
+
+  /** Remplace la carte d'un artifact (nouvelle version après correction) dans le message qui l'a produit. */
+  const upsertArtifactRef = useCallback((messageId: string, ref: ArtifactRef) => {
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, artifacts: [...m.artifacts.filter((a) => a.key !== ref.key), ref] } : m)));
+  }, []);
+
+  return { messages, conversationId, isStreaming, send, regenerate, edit, stop, currentConversationId, upsertArtifactRef };
 }

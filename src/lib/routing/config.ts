@@ -40,7 +40,7 @@ export const AUTH_MODE_HELP: Record<AuthMode, string> = {
   AUTO: "JEV choisit les modes et IATrano les applique directement. Les modes utilisés restent affichés au-dessus de la réponse.",
   MANUAL: "JEV propose des modes ; vous validez chaque proposition avant que Qwen ne réponde.",
   HYBRID: "Activation directe quand JEV est très sûr de lui, confirmation demandée quand il hésite.",
-  OFF: "JEV n'est pas consulté : vous activez vous-même les modes avec les boutons sous le champ de saisie.",
+  OFF: "JEV n'est pas consulté : vous activez vous-même les modes dans le panneau « Options » sous le champ de saisie.",
 };
 
 export const DEFAULT_THRESHOLD = 0.6;

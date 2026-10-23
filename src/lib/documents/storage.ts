@@ -12,8 +12,10 @@ import { badRequest } from "@/lib/errors";
 // Arborescence : <racine>/<projectId>/<documentId>/… — chemins toujours construits par le serveur, jamais
 // à partir d'un nom fourni par l'utilisateur, et vérifiés pour ne jamais sortir de la racine.
 
+// Les commentaires turbopackIgnore excluent ces accès dynamiques du traçage de la sortie standalone
+// (sinon tout le dépôt y serait copié) : ils visent des fichiers de données, jamais du code.
 export function storageRoot() {
-  return path.resolve(process.env.DOCUMENT_STORAGE_DIR || path.join(process.cwd(), "data", "documents"));
+  return path.resolve(/* turbopackIgnore: true */ process.env.DOCUMENT_STORAGE_DIR || path.join(/* turbopackIgnore: true */ process.cwd(), "data", "documents"));
 }
 
 export function resolveStored(relative: string) {
@@ -91,15 +93,15 @@ export async function discardTemp(tempPath: string) {
 }
 
 export async function fileSize(relative: string) {
-  return (await stat(resolveStored(relative))).size;
+  return (await stat(/* turbopackIgnore: true */ resolveStored(relative))).size;
 }
 
 export function readStored(relative: string, range?: { start: number; end: number }) {
-  return createReadStream(resolveStored(relative), range);
+  return createReadStream(/* turbopackIgnore: true */ resolveStored(relative), range);
 }
 
 export async function readHead(relative: string, bytes = 16384) {
-  const fh = await open(resolveStored(relative), "r");
+  const fh = await open(/* turbopackIgnore: true */ resolveStored(relative), "r");
   try {
     const buf = Buffer.alloc(bytes);
     const { bytesRead } = await fh.read(buf, 0, bytes, 0);

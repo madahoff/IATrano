@@ -28,13 +28,19 @@ CMD ["pnpm", "prisma", "migrate", "deploy"]
 
 # --- Exécution
 FROM node:${NODE_VERSION} AS runner
-RUN apk add --no-cache openssl libc6-compat && addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
+# poppler-utils : extraction et rendu des PDF (≈ 10 Mo) ; ffmpeg : vidéos et audio (≈ 70 Mo, désactivable avec
+# --build-arg WITH_FFMPEG=false si aucune vidéo n'est importée). L'OCR (tesseract.js) est inclus dans node_modules.
+ARG WITH_FFMPEG=true
+RUN apk add --no-cache openssl libc6-compat poppler-utils $([ "$WITH_FFMPEG" = "true" ] && echo ffmpeg) \
+  && addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs \
+  && mkdir -p /app/data/documents && chown -R nextjs:nodejs /app/data
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     HOSTNAME=0.0.0.0 \
     PORT=3000 \
-    IATRANO_IN_DOCKER=true
+    IATRANO_IN_DOCKER=true \
+    DOCUMENT_STORAGE_DIR=/app/data/documents
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static

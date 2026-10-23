@@ -120,12 +120,22 @@ export function scannedPage(lines: Array<string | { text: string; size?: number;
     writeFileSync(path.join(dir, "p.pdf"), buildPdf([{ kind: "text", lines }]));
     execFileSync("pdftoppm", ["-r", "150", "-gray", "-jpeg", "-singlefile", path.join(dir, "p.pdf"), path.join(dir, "p")]);
     const jpeg = readFileSync(path.join(dir, "p.jpg"));
-    const width = jpeg.readUInt16BE(jpeg.indexOf(Buffer.from([0xff, 0xc0])) + 7);
-    const height = jpeg.readUInt16BE(jpeg.indexOf(Buffer.from([0xff, 0xc0])) + 5);
-    return { kind: "image", jpeg, width, height };
+    return { kind: "image", jpeg, ...jpegSize(jpeg) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** Dimensions lues dans le segment SOF, en parcourant les marqueurs (un octet 0xFFC0 peut figurer ailleurs). */
+function jpegSize(jpeg: Buffer) {
+  let i = 2;
+  while (i < jpeg.length) {
+    const marker = jpeg[i + 1];
+    const len = jpeg.readUInt16BE(i + 2);
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { height: jpeg.readUInt16BE(i + 5), width: jpeg.readUInt16BE(i + 7), components: (jpeg[i + 9] === 3 ? 3 : 1) as 1 | 3 };
+    i += 2 + len;
+  }
+  throw new Error("JPEG sans segment SOF");
 }
 
 /** Image PNG d'un texte (tableau ou schéma annoté) : rendu d'une page PDF. */

@@ -7,8 +7,9 @@ import { analyzeQuestion, chapterPattern, compressPages } from "@/lib/documents/
 import { csvUnits, parseCsv, splitParts } from "@/lib/documents/extract/text";
 import { htmlToMarkdown } from "@/lib/documents/extract/html";
 import { extractPptx, extractXlsx } from "@/lib/documents/extract/office";
-import { readZip, ZipLimitError } from "@/lib/documents/extract/zip";
-import { analysisWindows, consolidateMethods, sanitizeAnalysis } from "@/lib/documents/analyze";
+import { assertSafeZip, readZip, ZipLimitError } from "@/lib/documents/extract/zip";
+import { imageDimensions } from "@/lib/documents/extract/image-size";
+import { analysisWindows, consolidateMethods, packSections, sanitizeAnalysis, sectionPathForPage, verifyPages } from "@/lib/documents/analyze";
 import { quotedPhrases, rrf } from "@/lib/documents/search-utils";
 import type { ExtractedUnit } from "@/lib/documents/types";
 
@@ -51,6 +52,19 @@ describe("structure et segmentation", () => {
     const blocks = parseBlocks(units, { plain: true, boilerplate: boiler });
     expect(blocks.some((b) => b.type !== "heading" && "text" in b && b.text.includes("RAPPORT ANNUEL"))).toBe(false);
     expect(blocks.some((b) => b.type === "paragraph" && b.text.includes("fin de la page et qui se poursuit"))).toBe(true);
+  });
+
+  it("ne prend pas pour un pied de page une phrase de contenu répétée", () => {
+    const units = Array.from({ length: 10 }, (_, i) => page(i + 1, `En-tête du manuel\nLe relevé numéro ${i} de la page ${i} indique une valeur conforme aux attentes.\n${i + 1}`));
+    const boiler = detectBoilerplate(units);
+    expect(boiler.has("en-tête du manuel")).toBe(true);
+    expect([...boiler].some((k) => k.startsWith("le relevé"))).toBe(false);
+  });
+
+  it("garde comme titre la première occurrence d'un titre courant répété", () => {
+    const units = Array.from({ length: 12 }, (_, i) => page(i + 1, `Chapitre ${i < 6 ? 1 : 2} ${i < 6 ? "Principes" : "Méthodes"}\n\nContenu de la page ${i + 1} sur les réglages.`));
+    const blocks = parseBlocks(units, { plain: true, boilerplate: detectBoilerplate(units) });
+    expect(blocks.filter((b) => b.type === "heading").map((b) => [b.text, b.unit])).toEqual([["Chapitre 1 Principes", 1], ["Chapitre 2 Méthodes", 7]]);
   });
 
   it("ne sépare pas une conclusion courte de son explication quand la marge le permet", () => {
@@ -183,6 +197,16 @@ describe("extracteurs", () => {
   it("refuse une archive dont la taille décompressée est excessive", () => {
     const bomb = zipSync({ "ppt/slides/slide1.xml": new Uint8Array(30 * 1024 * 1024) }, { level: 9 });
     expect(() => readZip(bomb, () => true, { maxEntries: 10, maxEntryBytes: 10 * 1024 * 1024, maxTotalBytes: 20 * 1024 * 1024, maxRatio: 100 })).toThrow(ZipLimitError);
+    // Même pour une entrée qu'on ne lirait pas (DOCX confié ensuite à mammoth).
+    expect(() => assertSafeZip(bomb, { maxEntries: 10, maxEntryBytes: 10 * 1024 * 1024, maxTotalBytes: 20 * 1024 * 1024, maxRatio: 100 })).toThrow(ZipLimitError);
+  });
+
+  it("lit les dimensions d'une image sans la décoder (bombes de pixels)", () => {
+    const png = Buffer.alloc(32);
+    png.write("\x89PNG", 0, "latin1");
+    png.writeUInt32BE(100_000, 16);
+    png.writeUInt32BE(90_000, 20);
+    expect(imageDimensions(png)).toEqual({ width: 100_000, height: 90_000 });
   });
 });
 
@@ -193,13 +217,51 @@ describe("analyse progressive", () => {
     expect(windows.length).toBeGreaterThan(3);
     expect(windows.join("\n").split("\n")).toHaveLength(30);
     const a = sanitizeAnalysis(
-      { subject: "Calibration", summary: "x", concepts: [], definitions: [{ term: "Seuil", definition: "Valeur limite", page: 999 }], arguments: [], conclusions: [{ text: "OK", page: 10 }], methods: [{ name: "Recette inventée", objective: "o", explicit: true, steps: ["Danser la samba"], page: 10 }], causes: [], examples: [], rules: [], references: [], uncertain: [] },
+      { subject: "Calibration", summary: "x", concepts: [], definitions: [{ term: "Seuil", definition: "Valeur limite", evidence: "La calibration se fait au seuil", page: 999 }, { term: "Capteur", definition: "Dispositif de mesure", evidence: "un capteur est un dispositif", page: 10 }], arguments: [], conclusions: [{ text: "OK", evidence: "calibration se fait au seuil", page: 10 }], methods: [{ name: "Recette inventée", objective: "o", explicit: true, evidence: "La calibration se fait", steps: ["Danser la samba"], page: 10 }], causes: [], examples: [], rules: [], references: [], uncertain: [] },
       "[p. 10] La calibration se fait au seuil.\n[p. 11] Fin.",
     );
     expect(a.definitions[0].page).toBeNull();
+    // Définition sans citation exacte dans l'extrait : écartée (connaissance extérieure ou inventée).
+    expect(a.definitions.map((d) => d.term)).toEqual(["Seuil"]);
     expect(a.conclusions[0].page).toBe(10);
     // « Explicite » mais introuvable dans le texte : rétrogradée en méthode déduite.
     expect(a.methods[0].explicit).toBe(false);
+  });
+
+  it("ne déclare « explicite » qu'une méthode présentée comme telle dans le texte", () => {
+    const window = "[p. 3] Le module de contrôle surveille les alarmes actives selon le protocole interne.\n[p. 4] Méthode de purge : l'auteur recommande cette procédure. Étape 1 : ouvrir la vanne. Étape 2 : purger le circuit.";
+    const base = { subject: "", summary: "", concepts: [], definitions: [], arguments: [], conclusions: [], causes: [], examples: [], rules: [], references: [], uncertain: [] };
+    const a = sanitizeAnalysis(
+      {
+        ...base,
+        methods: [
+          { name: "Surveillance des alarmes actives", objective: "", explicit: true, evidence: "surveille les alarmes actives selon le protocole", steps: ["Le module de contrôle surveille les alarmes actives"], page: 3 },
+          { name: "Méthode de purge", objective: "", explicit: true, evidence: "l'auteur recommande cette procédure", steps: ["Ouvrir la vanne", "Purger le circuit"], page: 4 },
+        ],
+      },
+      window,
+    );
+    expect(a.methods.map((m) => [m.name, m.explicit])).toEqual([["Surveillance des alarmes actives", false], ["Méthode de purge", true]]);
+  });
+
+  it("corrige les pages d'un point de synthèse d'après le contenu des pages", () => {
+    const pages = new Map([[1, "Introduction générale du manuel et présentation des équipes."], [3, "Le code d'accès du coffret principal est ZEPHYR-117 et il est renouvelé chaque trimestre."]]);
+    expect(verifyPages("Le code d'accès du coffret principal est ZEPHYR-117, renouvelé chaque trimestre.", [1], pages)).toEqual([3]);
+    expect(verifyPages("Le code d'accès du coffret principal est ZEPHYR-117.", [3], pages)).toEqual([3]);
+    expect(verifyPages("Une affirmation sans rapport avec le document.", [1], pages)).toEqual([]);
+  });
+
+  it("regroupe les sections en lots et rattache chaque élément à sa section par la page", () => {
+    const sections = [
+      { tokenCount: 1000, path: ["1 A"], pageStart: 1, pageEnd: 4 },
+      { tokenCount: 1000, path: ["1 A", "1.1 B"], pageStart: 3, pageEnd: 6 },
+      { tokenCount: 5000, path: ["2 C"], pageStart: 7, pageEnd: 20 },
+      { tokenCount: 200, path: ["3 D"], pageStart: 21, pageEnd: 21 },
+    ];
+    expect(packSections(sections, 4000).map((p) => p.map((s) => s.path.at(-1)))).toEqual([["1 A", "1.1 B"], ["2 C"], ["3 D"]]);
+    expect(sectionPathForPage(sections, 5)).toBe("1 A › 1.1 B");
+    expect(sectionPathForPage(sections, 2)).toBe("1 A");
+    expect(sectionPathForPage(sections, 99)).toBeNull();
   });
 
   it("consolide une méthode décrite dans plusieurs sections", () => {

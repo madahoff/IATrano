@@ -26,11 +26,12 @@ Plateforme de chat IA **locale et auto-hébergée** : une interface moderne insp
 14. [JEV : connexion et test](#jev--connexion-et-test)
 15. [Mascotte « Trano »](#mascotte--trano-)
 16. [Mémoire persistante](#mémoire-persistante)
-17. [Sécurité](#sécurité)
-18. [Migrations et maintenance](#migrations-et-maintenance)
-19. [Tests](#tests)
-20. [Dépannage](#dépannage)
-21. [Limites connues](#limites-connues)
+17. [Bibliothèque documentaire](#bibliothèque-documentaire)
+18. [Sécurité](#sécurité)
+19. [Migrations et maintenance](#migrations-et-maintenance)
+20. [Tests](#tests)
+21. [Dépannage](#dépannage)
+22. [Limites connues](#limites-connues)
 
 ---
 
@@ -630,6 +631,96 @@ L'IA retient d'elle-même les informations durables (préférences, outils, proj
 
 **Contrôle** : page **Mémoire** (menu utilisateur) — interrupteurs « Utiliser la mémoire » et « Enregistrement automatique » (désactivé, seules les demandes explicites « retiens / oublie » sont traitées), recherche, filtre par portée, historique des versions, consolidation, effacement total. Page d'un projet : sa mémoire. Dans le chat, une notification discrète n'apparaît que si la mémoire change réellement. Administration → Contexte : interrupteur général et **modèle d'analyse** (par défaut celui de la conversation ; un modèle plus léger réduit le coût).
 
+## Bibliothèque documentaire
+
+Chaque projet dispose d'une bibliothèque de documents que ses conversations interrogent **sans jamais les charger en entier** dans le contexte du modèle : un PDF de 400 pages est lu, structuré, indexé et analysé une fois, en arrière-plan ; chaque question n'envoie ensuite au modèle que les passages utiles, numérotés `[D1]`, `[D2]`…, avec leur page, leur section ou leur horodatage. Code : [`src/lib/documents`](src/lib/documents).
+
+### Formats
+
+| Format | Extraction | Unité de référence |
+| --- | --- | --- |
+| PDF (texte, numérisé ou mixte) | `pdftotext` page par page ; une page sans texte exploitable est rendue (`pdftoppm`) puis lue par OCR | page |
+| Word (DOCX) | `mammoth` → titres, listes, tableaux ; images intégrées lues par OCR | partie (Word n'a pas de pagination fixe) |
+| PowerPoint (PPTX) | XML des diapositives : titre, puces, tableaux, notes de l'orateur ; images lues par OCR | diapositive |
+| Excel (XLSX), CSV / TSV | tableaux Markdown, en-tête répété dans chaque bloc | feuille / bloc de lignes |
+| Texte, Markdown, JSON, HTML | texte structuré (titres Markdown / HTML conservés) | partie |
+| Images (PNG, JPEG, WebP, GIF, BMP, TIFF) | OCR ; analyse visuelle si un modèle vision est configuré | image |
+| Vidéo (MP4, MOV, WebM, MKV), audio (MP3, WAV, M4A, OGG) | transcription horodatée (tranches de 5 min) + images clés aux changements de scène (au moins une par minute, 240 au plus), OCR et vision | tranche horodatée |
+
+Un nouveau format s'ajoute dans [`formats.ts`](src/lib/documents/formats.ts) (extension + signature) et dans l'étape `EXTRACT` de [`pipeline.ts`](src/lib/documents/pipeline.ts) : il suffit de produire des unités de texte canonique (Markdown léger).
+
+### Pipeline ([`pipeline.ts`](src/lib/documents/pipeline.ts), file [`worker.ts`](src/lib/documents/worker.ts))
+
+`EXTRACT` → `OCR` (pages-images, images, transcription) → `SEGMENT` (structure, segments, index plein texte) → `EMBED` → `ANALYZE` → `SYNTHESIZE`.
+
+- **File persistante** (`DocumentJob`) consommée par le serveur (`instrumentation.ts`) : voie rapide pour indexer un nouveau document pendant qu'un autre est en cours d'analyse par le LLM ; bail renouvelé à chaque étape, reprise automatique d'un traitement interrompu (redémarrage, crash) **là où il s'était arrêté** — l'état est en base (pages « en attente », segments sans vecteur, sections non analysées) ; 3 tentatives avec délai croissant pour les erreurs passagères, échec immédiat et visible pour un fichier corrompu ; concurrence réglable (1 document à la fois par défaut).
+- **Le document est interrogeable dès la fin de `SEGMENT`** (quelques secondes pour 400 pages) ; l'analyse par le LLM continue ensuite.
+- **Priorité au chat** : les appels au LLM du traitement attendent qu'aucune réponse ne soit en cours de génération, et utilisent le même `num_ctx` que le chat (Ollama ne recharge pas le modèle).
+- **Rien n'est passé sous silence** : chaque unité a un état (`lue`, `lue partiellement`, `vide`, `échec`, `non traitée`) et une méthode (texte, OCR, transcription, image clé) ; les limites (pages numérisées non lues faute d'OCR, audio non transcrit, images lues sans modèle vision, limite de pages atteinte…) sont enregistrées dans le document, affichées dans l'interface et rappelées au modèle quand elles affectent une réponse.
+
+### Structure et segmentation ([`segment.ts`](src/lib/documents/segment.ts))
+
+Titres détectés (Markdown, « Chapitre 3 … », « 2.4 … », titres en capitales), hiérarchie des sections, en-têtes et pieds de page répétés retirés (la première occurrence d'un titre courant reste le titre de section), paragraphes recollés à travers les sauts de page, césures réparées. Les segments ne franchissent jamais une frontière de section ; un tableau trop long est découpé par groupes de lignes **en répétant son en-tête** ; une légende reste avec ce qu'elle décrit ; une conclusion courte (« Ainsi… ») reste avec son explication ; un chevauchement reprend la fin du segment précédent. Taille cible configurable (450 tokens par défaut), réduite automatiquement si la fenêtre du modèle est petite. Chaque segment garde document, pages, chemin de section, type (texte, tableau, légende, OCR, transcription, image) et horodatages.
+
+### Recherche hybride ([`search.ts`](src/lib/documents/search.ts))
+
+- **Lexicale : BM25** calculé en SQL sur l'index plein texte PostgreSQL (`tsvector` + GIN, sans accents, langue détectée) : fréquence documentaire par terme, fréquence du terme tirée des positions, longueur normalisée.
+- **Sémantique** : embeddings (Ollama `/api/embed` ou `/v1/embeddings`), vecteurs normalisés stockés en base et gardés en mémoire par document ; **mis en cache par empreinte de contenu** (jamais recalculés pour un passage inchangé, même dans une nouvelle version).
+- **Expressions exactes** (entre guillemets), **toutes les occurrences** d'une notion (comptées, par page), filtres par document, pages, chapitre/section, type de contenu, période d'import ou intervalle de temps.
+- Fusion **Reciprocal Rank Fusion** ; expansion contrôlée du vocabulaire par le LLM (termes associés, poids réduit).
+
+### Questions dans le chat ([`retrieval.ts`](src/lib/documents/retrieval.ts))
+
+1. **Intention** détectée sans modèle : synthèse, méthodes, comparaison, contradictions, occurrences, localisation (« dans quelles pages… », « à quel moment… »), recherche simple ; pages et chapitres cités deviennent des filtres.
+2. Question complexe → **décomposition** par le LLM en sous-requêtes autonomes + termes associés ; recherche par sous-requête (par chapitre pour une comparaison) ; **second tour** élargi pour les sous-requêtes mal couvertes.
+3. Selon l'intention, ajout des **connaissances extraites** (synthèse, méthodes, contradictions), toujours étiquetées « synthèse de l'IA, à vérifier dans les passages originaux ». Une synthèse demandée avant la fin de l'analyse s'appuie sur des extraits répartis dans tout le document, et le dit.
+4. Passages ajustés au budget (45 % de la capacité, 30 % avec la recherche Web), regroupés par document et dans l'ordre du texte.
+5. Après la réponse : références `[Dn]` inventées **retirées** ; chaque référence restante est **confrontée à la phrase qui la cite** (vocabulaire et chiffres) et signalée « à vérifier » si le passage ne la soutient pas. La trace (`DocumentRetrieval`) conserve passages, citations et vérifications.
+
+Les documents sont des **données non fiables** : texte neutralisé (balises de rôle, fin de bloc), consigne explicite de ne jamais exécuter leurs instructions, aucune action déclenchable depuis un document.
+
+### Analyse progressive et mémoire ([`analyze.ts`](src/lib/documents/analyze.ts))
+
+Les sections consécutives sont regroupées en lots remplissant une fenêtre (12 000 tokens au plus, moins si le modèle a une petite fenêtre) : avec un LLM local, la durée d'un appel dépend surtout de la longueur de la **sortie**, bornée par le schéma JSON (`maxItems`, `maxLength`, appliqués par la grammaire du moteur). Chaque lot donne : sujet, résumé, concepts, définitions, arguments, conclusions, **méthodes** (objectif, contexte, prérequis, étapes ordonnées, outils, règles de décision, entrées, résultats, erreurs fréquentes, limites, exemples), causes et effets, règles, renvois, incertitudes.
+
+Garde-fous contre les connaissances inventées :
+- chaque définition, méthode, règle, conclusion et incertitude doit fournir une **citation exacte** de l'extrait (« evidence »), vérifiée par le serveur : sans citation retrouvée, l'élément est écarté ;
+- une page citée hors de l'extrait est retirée ; un élément d'un lot est rattaché à la section qui contient sa page ;
+- une méthode n'est « décrite par l'auteur » que si son nom ou ses étapes figurent dans le texte **et** que le passage cité la présente comme telle (méthode, procédure, étapes, recommandation…) ; sinon elle est affichée « déduite par l'IA » ;
+- les pages des points de la synthèse sont vérifiées par le contenu des pages (corrigées ou retirées).
+
+Puis : synthèse hiérarchique (map → reduce), méthodes consolidées sur tout le document, définitions et concepts agrégés, contradictions vérifiées par le LLM.
+
+| Niveau | Stockage | Contenu |
+| --- | --- | --- |
+| Mémoire documentaire | fichier original (disque), `DocumentPage`, `ProjectDocumentChunk`, `DocumentSection` | texte intégral page par page, index lexical et vectoriel, structure |
+| Mémoire de synthèse | `DocumentInsight` | synthèse, méthodes, définitions, concepts, règles, relations, contradictions, chronologie (vidéo) — avec sources |
+| Mémoire conversationnelle | `Memory` (voir [Mémoire persistante](#mémoire-persistante)) | ce que l'utilisateur dit du document dans ses conversations |
+
+**Mises à jour** : un fichier identique (empreinte SHA-256) n'est jamais retraité ; « Nouvelle version » remplace le fichier en conservant l'historique (`DocumentVersion`) — seules les sections modifiées sont réanalysées (cache par empreinte), les connaissances de la version précédente sont conservées pour traçabilité mais plus jamais utilisées.
+
+### Interface
+
+- **Projet** → Documents : import multiple (envoi en flux, progression, annulation), état de chaque document (étape, pages traitées, limites), nouvelle version, retraitement, suppression, recherche de passages.
+- **Document** (`/projects/<id>/documents/<doc>`) : synthèse et points de vigilance, méthodes (auteur / IA), définitions et concepts, plan, recherche, **carte de couverture** page par page, traitement (mesures, versions, connaissances mémorisées, retraitement partiel). Chaque source ouvre le **passage original** (texte extrait, rendu de la page) et le fichier à la bonne page (`#page=`) ou au bon moment (`#t=`).
+- **Chat** : étape de recherche affichée, citations `[Dn]` cliquables (document, page, section, extrait, avertissement si faiblement étayée), liste des sources consultées et des limites. Sélecteur « Documents interrogés » (tous ou une sélection, enregistrée sur la conversation) ; « Interroger ce document » ouvre une conversation limitée à ce document.
+- **Administration → Documents** : capacités réellement disponibles (outils, moteur OCR, modèles vision), modèle d'embeddings, OCR, vision, transcription, analyse, tailles, limites, test des services.
+
+### Installation des composants
+
+| Composant | Rôle | Installation |
+| --- | --- | --- |
+| poppler-utils | PDF | inclus dans l'image Docker ; hôte : `apt install poppler-utils` |
+| ffmpeg | vidéo, audio | inclus dans l'image (`--build-arg WITH_FFMPEG=false` pour l'omettre) ; hôte : `apt install ffmpeg` |
+| tesseract.js | OCR (fra + eng) | dépendance npm ; données de langue téléchargées une fois dans `<stockage>/.ocr-cache` ; le binaire `tesseract` est utilisé à la place s'il est installé |
+| Modèle d'embeddings | recherche sémantique | `ollama pull embeddinggemma` sur le serveur IA, puis Administration → Documents (ou `DOCUMENT_EMBEDDING_MODEL`) |
+| Transcription | audio des vidéos | [`deploy/whisper`](deploy/whisper/README.md) (faster-whisper, service systemd utilisateur) ou tout service compatible OpenAI |
+| Modèle vision (facultatif) | schémas, graphiques, captures | ex. `ollama pull qwen2.5vl:7b`, puis Administration → Documents |
+
+Fichiers : `DOCUMENT_STORAGE_DIR` (défaut `./data/documents`, Docker : volume `iatrano-documents` sur `/app/data/documents`, **à sauvegarder avec la base**).
+
+Mesures sur un document de 400 pages : [`docs/benchmarks/documents.md`](docs/benchmarks/documents.md) (`DOCS_REAL=1`, voir [Tests](#tests)).
+
 ---
 
 ## Sécurité
@@ -690,6 +781,7 @@ TEST_DATABASE_URL=… LLM_TEST_URL=http://localhost:11434 LLM_TEST_MODEL=qwen2.5
 - **Intégration** (vraie base, vrais handlers de routes ; seul le contexte de requête Next.js est simulé) : isolation des conversations, recherche, authentification, désactivation, limitation des connexions, CSRF, autorisations d'administration, protection du dernier super-administrateur, URL et clé d'API, orchestration du streaming avec un fournisseur factice (Thinking, clarifications valides et invalides, repli structuré, annulation, erreurs, modèle absent, réponse vide, édition et régénération, limitation de débit), bootstrap idempotent, cohérence schéma/migrations.
 - **Recherche Web** : unitaires ([`web-security.test.ts`](tests/unit/web-security.test.ts), [`citations.test.ts`](tests/unit/citations.test.ts), [`search-pipeline.test.ts`](tests/unit/search-pipeline.test.ts)) — classification IP, validation d'URL, DNS rebinding, contenus hostiles, citations, décision, requêtes, extraction, segmentation, classement ; les redirections malveillantes réelles (via httpbin.org) sont ignorées hors ligne. Intégration ([`web-search.test.ts`](tests/integration/web-search.test.ts)) : scénarios 1 à 8 dans `/api/chat` avec vraie base et vrai pipeline (moteur, téléchargements et LLM simulés).
 - **Mémoire** : unitaires ([`memory.test.ts`](tests/unit/memory.test.ts)) — filtre, règles, preuve, évaluation, portée, budget, empreintes d'oubli. Intégration ([`memory.test.ts`](tests/integration/memory.test.ts)) : les 12 critères d'acceptation de bout en bout via `/api/chat` (mémorisation automatique, redémarrage, nouvelle conversation, isolation, informations ponctuelles, préférence modifiée, projets, oubli, secrets, budget, panne de l'extraction et reprise). Avec un vrai modèle : [`memory-real.test.ts`](tests/integration/memory-real.test.ts) (`LLM_TEST_URL`, `LLM_TEST_MODEL`).
+- **Documents** : unitaires ([`documents.test.ts`](tests/unit/documents.test.ts)) — structure, tableaux, légendes, pieds de page, formats et signatures, citations `[Dn]` et vérification du soutien, intentions et chapitres, CSV/HTML/PPTX/XLSX, archives piégées, fenêtres d'analyse, consolidation des méthodes, fusion RRF. Intégration ([`documents.test.ts`](tests/integration/documents.test.ts), vrais poppler/ffmpeg/tesseract.js, LLM et services simulés) : PDF de 400 pages (ordre, couverture, OCR), structure, recherche début/milieu/fin (précision et rappel), occurrences, méthodes et contradiction, croisement de chapitres, passage original et fichier (Range), réponses sourcées (références inventées retirées, soutien vérifié), document identique non retraité et nouvelle version incrémentale, reprise après interruption, CSV et image, vidéo horodatée, pages non traitées signalées, embeddings et cache, isolation utilisateurs/projets, fichiers déguisés et PDF corrompu, suppression des dérivés. Banc d'essai sur la pile réelle ([`documents-real.test.ts`](tests/integration/documents-real.test.ts)) : `DOCS_REAL=1 [DOCS_LLM_URL=… DOCS_LLM_MODEL=… DOCS_EMBED_MODEL=… DOCS_ASR_URL=…]`, rapport dans `docs/benchmarks/documents.md`.
 - La base de test doit avoir un nom contenant « test » : elle est vidée entre les tests.
 
 ---

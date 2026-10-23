@@ -1,0 +1,15 @@
+[Unit]
+Description=IATrano — transcription audio (faster-whisper, API compatible OpenAI)
+After=network-online.target
+
+[Service]
+EnvironmentFile=@DEST@/whisper.env
+ExecStart=@DEST@/venv/bin/python @DEST@/server.py
+Restart=on-failure
+RestartSec=5
+# Ressources bornées : la transcription ne doit pas affamer le reste de la machine.
+Nice=10
+MemoryMax=4G
+
+[Install]
+WantedBy=default.target

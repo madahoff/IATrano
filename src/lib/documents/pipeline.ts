@@ -18,11 +18,13 @@ import {
   analyzeWindow,
   checkContradiction,
   consolidateMethods,
-  emptyAnalysis,
   formatSources,
   groupDefinitions,
   mergeAnalyses,
   methodText,
+  packSections,
+  sectionPathForPage,
+  verifyPages,
   sectionNote,
   synthesisText,
   synthesize,
@@ -34,12 +36,15 @@ import { embedDocuments, embeddingConfig, toBytes } from "./embeddings";
 import { htmlToMarkdown } from "./extract/html";
 import { extractAudioChunks, extractKeyframes, probeMedia, AUDIO_CHUNK_SEC } from "./extract/media";
 import { extractPptx, extractXlsx } from "./extract/office";
+import { assertSafeZip } from "./extract/zip";
+import { imageDimensions, MAX_IMAGE_PIXELS } from "./extract/image-size";
 import { extractPdfPages, pdfInfo, renderPdfPage } from "./extract/pdf";
 import { csvUnits, decodeText, jsonText, splitParts } from "./extract/text";
 import { cleanOcrText, ocrImage } from "./ocr";
 import { dropVectorCache } from "./search";
 import { buildStructure, detectBoilerplate, detectLanguage, parseBlocks, recommendedSegmentTokens } from "./segment";
 import { ensureDocumentDir, resolveStored } from "./storage";
+import { ToolError } from "./tools";
 import { formatTimestamp, transcribeFile, transcriptUnitText } from "./transcribe";
 import type { DocumentKindName, DocumentProgress, ExtractedUnit, InsightSource, SectionDraft } from "./types";
 import { analyzeImage, imageUnitText } from "./vision";
@@ -50,11 +55,14 @@ import { analyzeImage, imageUnitText } from "./vision";
 // analysées) : une reprise après interruption repart exactement de là où le traitement s'était arrêté.
 // Le document devient interrogeable dès la fin de SEGMENT ; l'analyse continue ensuite en arrière-plan.
 
+const MAX_MEDIA_MS = 6 * 3600_000;
 export const PENDING_MARK = "En attente de lecture (OCR ou transcription)";
 export const STAGES = ["EXTRACT", "OCR", "SEGMENT", "EMBED", "ANALYZE", "SYNTHESIZE"] as const;
 export type Stage = (typeof STAGES)[number];
 
 export class JobCancelled extends Error {}
+/** Erreur liée au fichier lui-même (corrompu, vide, protégé) : une nouvelle tentative donnerait le même résultat. */
+export class PermanentJobError extends Error {}
 
 export type JobRuntime = {
   job: DocumentJob;
@@ -62,6 +70,8 @@ export type JobRuntime = {
   /** Prolonge le bail du traitement ; lève JobCancelled si le document ou le traitement a disparu. */
   heartbeat: (patch?: { cursor?: Record<string, unknown> }) => Promise<void>;
   metrics: Record<string, number>;
+  /** Étape en cours (la file l'utilise pour ouvrir sa voie rapide pendant les analyses longues). */
+  onStage?: (stage: Stage) => void;
 };
 
 type Ctx = JobRuntime & { doc: ProjectDocument; app: AppSettings; settings: DocumentSettings; kind: DocumentKindName; progress: DocumentProgress; warnings: Set<string> };
@@ -143,11 +153,13 @@ async function extractStage(ctx: Ctx) {
   const buf = () => readFile(file);
   switch (ctx.kind) {
     case "DOCX": {
+      const data = await buf();
+      assertSafeZip(new Uint8Array(data));
       const mammoth = await import("mammoth");
       const imgDir = await ensureDocumentDir(doc.projectId, doc.id, "media");
       const images: Array<{ rel: string; n: number }> = [];
       const result = await mammoth.convertToHtml(
-        { buffer: await buf() },
+        { buffer: data },
         {
           convertImage: mammoth.images.imgElement(async (image) => {
             const data = await image.readAsBuffer();
@@ -205,12 +217,16 @@ async function extractStage(ctx: Ctx) {
     case "MARKDOWN":
       units = splitParts(decodeText(await buf()));
       break;
-    case "IMAGE":
+    case "IMAGE": {
+      const dims = imageDimensions((await readFile(file)).subarray(0, 64 * 1024));
+      if (dims && dims.width * dims.height > MAX_IMAGE_PIXELS) throw new PermanentJobError(`Image trop grande (${dims.width} × ${dims.height} pixels, ${Math.round(MAX_IMAGE_PIXELS / 1e6)} mégapixels au maximum).`);
       units = [{ number: 1, label: "Image", method: "NONE", status: "SKIPPED", text: "", imagePath: doc.storagePath, needsOcr: true }];
       break;
+    }
     case "VIDEO":
     case "AUDIO": {
       const probe = await timed(ctx, "extractMs", () => probeMedia(file, ctx.signal));
+      if (probe.durationMs > MAX_MEDIA_MS) throw new PermanentJobError(`Média trop long (${formatTimestamp(probe.durationMs)} ; ${MAX_MEDIA_MS / 3600_000} h au maximum).`);
       meta.media = { durationMs: probe.durationMs, width: probe.width, height: probe.height, hasAudio: probe.hasAudio, tags: probe.metadata };
       const mediaDir = await ensureDocumentDir(doc.projectId, doc.id, "media");
       const drafts: ExtractedUnit[] = [];
@@ -286,6 +302,9 @@ async function readStage(ctx: Ctx) {
         }
         if (!imageRel) throw new Error("Image introuvable.");
         const abs = resolveStored(imageRel);
+        // Image intégrée démesurée (bombe de pixels) : non lue, signalée.
+        const dims = imageDimensions((await readFile(abs)).subarray(0, 64 * 1024));
+        if (dims && dims.width * dims.height > MAX_IMAGE_PIXELS) throw new Error(`Image trop grande pour être lue (${dims.width} × ${dims.height} pixels).`);
         let ocrText: string | null = null;
         let confidence: number | null = null;
         if (settings.ocrEnabled) {
@@ -356,7 +375,7 @@ async function segmentStage(ctx: Ctx) {
   const prevSections = await db.documentSection.findMany({ where: { documentId: doc.id }, select: { contentHash: true, analysis: true, analysisStatus: true, analysisModel: true, analyzedAt: true } });
   const oldHashes = new Set(previous.map((p) => p.contentHash));
   const newHashes = new Set(segments.map((s) => s.contentHash));
-  const reusedAnalysis = new Map(prevSections.filter((s) => s.analysisStatus === "DONE").map((s) => [s.contentHash, s]));
+  const reusedAnalysis = new Map(prevSections.filter((s) => s.analysisStatus === "DONE" || s.analysisStatus === "SKIPPED").map((s) => [s.contentHash, s]));
   await db.$transaction(
     async (tx) => {
       await tx.projectDocumentChunk.deleteMany({ where: { documentId: doc.id } });
@@ -377,7 +396,7 @@ async function segmentStage(ctx: Ctx) {
             tokenCount: s.tokenCount,
             contentHash: s.contentHash,
             analysis: (reuse?.analysis ?? undefined) as Prisma.InputJsonValue | undefined,
-            analysisStatus: reuse ? "DONE" : "PENDING",
+            analysisStatus: reuse ? reuse.analysisStatus : "PENDING",
             analysisModel: reuse?.analysisModel ?? null,
             analyzedAt: reuse?.analyzedAt ?? null,
           };
@@ -434,7 +453,7 @@ async function segmentStage(ctx: Ctx) {
   ctx.metrics.sections = sections.length;
   ctx.metrics.segmentTokens = target;
   ctx.progress.segment = { done: segments.length, total: segments.length, note: `${sections.length} sections · ${extractable}/${pages.length} unités avec contenu` };
-  if (!segments.length) throw new Error("Aucun texte exploitable n'a été extrait de ce document (voir l'onglet Pages).");
+  if (!segments.length) throw new PermanentJobError("Aucun texte exploitable n'a été extrait de ce document (voir l'onglet Pages).");
   await saveProgress(ctx, "SEGMENT", { status: "READY", error: null, language, indexedAt: new Date() });
 }
 
@@ -492,7 +511,8 @@ async function llmFor(ctx: Ctx): Promise<{ llm: LlmCall; windowTokens: number; v
   const window = await getWindowFor(model, ctx.app, info);
   // Même num_ctx que le chat : Ollama ne recharge pas le modèle entre une réponse et une analyse.
   const provider = withContextWindow(createProvider(providerConfigFrom(ctx.app)), window.numCtx);
-  const windowTokens = Math.max(1200, Math.min(6000, window.capacity - 3000));
+  // Fenêtres larges : la durée d'un appel dépend surtout de la sortie (bornée), pas de la longueur de l'extrait.
+  const windowTokens = Math.max(1200, Math.min(12_000, window.capacity - 3000));
   const pages = await db.documentPage.findMany({ where: { documentId: ctx.doc.id }, select: { number: true } });
   return { llm: { provider, model, think: info.capabilities.thinking === "no" ? undefined : false, signal: ctx.signal }, windowTokens, validPages: new Set(pages.map((p) => p.number)) };
 }
@@ -520,31 +540,42 @@ async function analyzeStage(ctx: Ctx) {
   const { sections: drafts } = await loadStructure(ctx);
   const byOrdinal = new Map<number, SectionDraft>(drafts.map((d) => [d.ordinal, d]));
   const sections = await db.documentSection.findMany({ where: { documentId: ctx.doc.id }, orderBy: { ordinal: "asc" } });
-  const todo = sections.filter((s) => s.analysisStatus !== "DONE" && s.analysisStatus !== "SKIPPED");
+  // Lots de sections consécutives remplissant une fenêtre : la durée d'un appel dépend surtout de la sortie (bornée),
+  // donc moins d'appels plus longs. Un lot est (ré)analysé dès qu'une de ses sections n'est pas analysée.
+  const packs = packSections(sections, windowTokens).filter((pack) => pack.some((s) => s.analysisStatus !== "DONE" && s.analysisStatus !== "SKIPPED"));
   const total = sections.length;
-  ctx.progress.analyze = { done: total - todo.length, total, failed: 0, note: llm.model };
+  ctx.progress.analyze = { done: total - packs.reduce((n, p) => n + p.length, 0), total, failed: 0, note: llm.model };
   await saveProgress(ctx, "ANALYZE");
-  for (const s of todo) {
+  for (const pack of packs) {
     await ctx.heartbeat();
-    const draft = byOrdinal.get(s.ordinal);
-    const text = draft && draft.contentHash === s.contentHash ? draft.text : (await db.projectDocumentChunk.findMany({ where: { sectionId: s.id }, orderBy: { ordinal: "asc" }, select: { content: true, page: true } })).map((c) => `[p. ${c.page ?? "?"}] ${c.content}`).join("\n");
+    const texts = await Promise.all(
+      pack.map(async (s) => {
+        const draft = byOrdinal.get(s.ordinal);
+        const body = draft && draft.contentHash === s.contentHash ? draft.text : (await db.projectDocumentChunk.findMany({ where: { sectionId: s.id }, orderBy: { ordinal: "asc" }, select: { content: true, page: true } })).map((c) => `[p. ${c.page ?? "?"}] ${c.content}`).join("\n");
+        return body.trim() ? `## ${s.path.join(" › ")}\n${body}` : "";
+      }),
+    );
+    const text = texts.filter(Boolean).join("\n");
+    const [first, ...rest] = pack;
     if (countTextTokens(text) < 40) {
-      await db.documentSection.update({ where: { id: s.id }, data: { analysisStatus: "SKIPPED" } });
-      ctx.progress.analyze.done++;
+      await db.documentSection.updateMany({ where: { id: { in: pack.map((s) => s.id) } }, data: { analysisStatus: "SKIPPED" } });
+      ctx.progress.analyze.done += pack.length;
       continue;
     }
+    const path = pack.length > 1 ? [...first.path.slice(0, -1), `${first.title} … ${rest.at(-1)!.title}`] : first.path;
     const windows = analysisWindows(text, windowTokens);
     try {
       const parts: SectionAnalysis[] = [];
       for (const [i, w] of windows.entries()) {
-        const key = `analysis:v${ANALYSIS_PROMPT_VERSION}:${llm.model}:${sha(`${s.path.join(">")}\n${w}`)}`;
+        const key = `analysis:v${ANALYSIS_PROMPT_VERSION}:${llm.model}:${sha(`${path.join(">")}\n${w}`)}`;
         parts.push(
           await cachedJson(key, async () => {
             await waitForChatIdle(ctx.signal);
             let lastErr: unknown;
             for (let attempt = 0; attempt < 2; attempt++) {
               try {
-                return await timed(ctx, "analyzeMs", () => analyzeWindow(llm, { documentName: ctx.doc.name, sectionPath: s.path, text: w, part: i + 1, parts: windows.length }));
+                ctx.metrics.analysisCalls = (ctx.metrics.analysisCalls ?? 0) + 1;
+                return await timed(ctx, "analyzeMs", () => analyzeWindow(llm, { documentName: ctx.doc.name, sectionPath: path, text: w, part: i + 1, parts: windows.length }));
               } catch (err) {
                 if (ctx.signal.aborted) throw new JobCancelled();
                 lastErr = err;
@@ -553,17 +584,20 @@ async function analyzeStage(ctx: Ctx) {
             throw lastErr;
           }),
         );
-        ctx.metrics.analysisCalls = (ctx.metrics.analysisCalls ?? 0) + 1;
         await ctx.heartbeat();
       }
-      await db.documentSection.update({ where: { id: s.id }, data: { analysis: mergeAnalyses(parts) as unknown as Prisma.InputJsonValue, analysisStatus: "DONE", analysisModel: llm.model, analyzedAt: new Date() } });
+      // L'analyse du lot est portée par sa première section ; les autres sont marquées analysées (rattachées au lot).
+      await db.$transaction([
+        db.documentSection.update({ where: { id: first.id }, data: { analysis: mergeAnalyses(parts) as unknown as Prisma.InputJsonValue, analysisStatus: "DONE", analysisModel: llm.model, analyzedAt: new Date() } }),
+        db.documentSection.updateMany({ where: { id: { in: rest.map((s) => s.id) } }, data: { analysis: Prisma.DbNull, analysisStatus: "DONE", analysisModel: llm.model, analyzedAt: new Date() } }),
+      ]);
     } catch (err) {
       if (err instanceof JobCancelled || ctx.signal.aborted) throw new JobCancelled();
-      ctx.progress.analyze.failed = (ctx.progress.analyze.failed ?? 0) + 1;
-      await db.documentSection.update({ where: { id: s.id }, data: { analysisStatus: "FAILED" } });
-      ctx.warnings.add(`Analyse impossible pour certaines sections (ex. « ${s.title.slice(0, 60)} ») : ${err instanceof Error ? err.message.slice(0, 160) : "erreur"}. Leurs passages restent consultables par la recherche.`);
+      ctx.progress.analyze.failed = (ctx.progress.analyze.failed ?? 0) + pack.length;
+      await db.documentSection.updateMany({ where: { id: { in: pack.map((s) => s.id) } }, data: { analysisStatus: "FAILED" } });
+      ctx.warnings.add(`Analyse impossible pour certaines sections (ex. « ${first.title.slice(0, 60)} ») : ${err instanceof Error ? err.message.slice(0, 160) : "erreur"}. Leurs passages restent consultables par la recherche.`);
     }
-    ctx.progress.analyze.done++;
+    ctx.progress.analyze.done += pack.length;
     await saveProgress(ctx, "ANALYZE");
   }
 }
@@ -575,10 +609,15 @@ async function synthesizeStage(ctx: Ctx) {
   const { llm, windowTokens, validPages } = setup;
   const sections = await db.documentSection.findMany({ where: { documentId: ctx.doc.id }, orderBy: { ordinal: "asc" } });
   const analyzed = sections.filter((s) => s.analysisStatus === "DONE" && s.analysis);
+  // Un lot de sections est analysé d'un bloc : chaque élément est rattaché à la section qui contient sa page.
+  const at = (page: number | null, s: (typeof sections)[number]) => sectionPathForPage(sections, page) ?? s.path.join(" › ");
   ctx.progress.synthesize = { done: 0, total: 4 };
   await saveProgress(ctx, "SYNTHESIZE");
   if (!analyzed.length) {
-    ctx.warnings.add("Aucune section n'a pu être analysée : pas de synthèse ni de méthodes extraites.");
+    // Contenu trop court pour une analyse (image, petit tableau) : rien à signaler. Échec réel : signalé.
+    if (sections.some((x) => x.analysisStatus === "FAILED")) ctx.warnings.add("Aucune section n'a pu être analysée : pas de synthèse ni de méthodes extraites.");
+    ctx.progress.synthesize = { done: 0, total: 0, note: "Contenu trop court pour une synthèse." };
+    await saveProgress(ctx, "SYNTHESIZE");
     return;
   }
   const where = (s: (typeof sections)[number]) => (s.pageStart ? (s.pageEnd && s.pageEnd !== s.pageStart ? `p. ${s.pageStart}–${s.pageEnd}` : `p. ${s.pageStart}`) : s.startMs != null ? formatTimestamp(s.startMs) : "");
@@ -618,6 +657,9 @@ async function synthesizeStage(ctx: Ctx) {
     return reduce(partials, partial);
   };
   const synthesis = await reduce(notes, false);
+  // Pages des points de synthèse : vérifiées par le contenu réel des pages (les fiches ne donnent qu'une localisation approchée).
+  const pageText = new Map((await db.documentPage.findMany({ where: { documentId: ctx.doc.id }, select: { number: true, text: true } })).map((p) => [p.number, p.text]));
+  for (const k of [...synthesis.keyPoints, ...synthesis.conclusions]) k.pages = verifyPages(k.text, k.pages, pageText);
   ctx.progress.synthesize.done = 1;
   await saveProgress(ctx, "SYNTHESIZE");
 
@@ -638,15 +680,15 @@ async function synthesizeStage(ctx: Ctx) {
   }
 
   // 2. Méthodes consolidées sur tout le document.
-  const methods = consolidateMethods(analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).methods.map((m) => ({ ...m, section: s.path.join(" › ") }))));
+  const methods = consolidateMethods(analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).methods.map((m) => ({ ...m, section: at(m.page, s) }))));
   for (const m of methods.slice(0, 80)) {
-    const hashes = analyzed.filter((s) => m.sources.some((src) => src.section === s.path.join(" › "))).map((s) => s.contentHash);
+    const hashes = sections.filter((s) => m.sources.some((src) => src.section === s.path.join(" › "))).map((s) => s.contentHash);
     insights.push({ kind: "METHOD", title: m.name, content: m as unknown as Prisma.InputJsonValue, text: methodText(m), origin: m.explicit ? "EXPLICIT" : "INFERRED", sources: m.sources as unknown as Prisma.InputJsonValue, sectionIds: hashes });
   }
   ctx.progress.synthesize.done = 2;
 
   // 3. Définitions, concepts, règles (agrégation sans LLM) et contradictions vérifiées par le LLM.
-  const defs = groupDefinitions(analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).definitions.map((d) => ({ ...d, section: s.path.join(" › ") }))));
+  const defs = groupDefinitions(analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).definitions.map((d) => ({ ...d, section: at(d.page, s) }))));
   for (const d of defs.slice(0, 120)) {
     const sources: InsightSource[] = d.entries.map((e) => ({ page: e.page, section: e.section }));
     insights.push({ kind: "DEFINITION", title: d.term, content: d as unknown as Prisma.InputJsonValue, text: `Définition de « ${d.term} » dans le document :\n${d.entries.map((e) => `- ${e.definition} (${formatSources([{ page: e.page, section: e.section }])})`).join("\n")}`, origin: "EXPLICIT", sources: sources as unknown as Prisma.InputJsonValue, sectionIds: [] });
@@ -657,14 +699,14 @@ async function synthesizeStage(ctx: Ctx) {
       const key = [...conceptCounts.keys()].find((k) => similarity(k, c.term) > 0.85) ?? c.term;
       const entry = conceptCounts.get(key) ?? { term: c.term, explanations: [], sources: [] };
       if (entry.explanations.length < 4 && !entry.explanations.some((e) => similarity(e, c.explanation) > 0.7)) entry.explanations.push(c.explanation);
-      entry.sources.push({ page: c.page, section: s.path.join(" › ") });
+      entry.sources.push({ page: c.page, section: at(c.page, s) });
       conceptCounts.set(key, entry);
     }
   }
   for (const c of [...conceptCounts.values()].sort((a, b) => b.sources.length - a.sources.length).slice(0, 80)) {
     insights.push({ kind: "CONCEPT", title: c.term, content: c as unknown as Prisma.InputJsonValue, text: `Concept « ${c.term} » (${c.sources.length} mention(s) analysée(s)) :\n${c.explanations.map((e) => `- ${e}`).join("\n")}\nSources : ${formatSources(c.sources)}`, origin: "EXPLICIT", sources: c.sources.slice(0, 20) as unknown as Prisma.InputJsonValue, sectionIds: [] });
   }
-  const rules = analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).rules.map((r) => ({ ...r, section: s.path.join(" › ") })));
+  const rules = analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).rules.map((r) => ({ ...r, section: at(r.page, s) })));
   if (rules.length) {
     insights.push({ kind: "RULE", title: "Règles, contraintes et critères", content: { rules } as unknown as Prisma.InputJsonValue, text: `Règles, contraintes et critères énoncés dans « ${ctx.doc.name} » :\n${rules.slice(0, 80).map((r) => `- ${r.text} (${formatSources([{ page: r.page, section: r.section }])})`).join("\n")}`, origin: "EXPLICIT", sources: rules.slice(0, 40).map((r) => ({ page: r.page, section: r.section })) as unknown as Prisma.InputJsonValue, sectionIds: [] });
   }
@@ -688,38 +730,40 @@ async function synthesizeStage(ctx: Ctx) {
       insights.push({ kind: "CONTRADICTION", title: `Définitions divergentes de « ${d.term} »`, content: { term: d.term, a, b, explanation: r.explanation } as unknown as Prisma.InputJsonValue, text: `Contradiction possible sur « ${d.term} » (vérifiée par l'IA) : ${r.explanation}\n- ${a.definition} (${formatSources([{ page: a.page, section: a.section }])})\n- ${b.definition} (${formatSources([{ page: b.page, section: b.section }])})`, origin: "INFERRED", sources: [{ page: a.page, section: a.section }, { page: b.page, section: b.section }] as unknown as Prisma.InputJsonValue, sectionIds: [] });
     }
   }
-  const uncertain = analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).uncertain.map((u) => ({ ...u, section: s.path.join(" › ") })));
+  const uncertain = analyzed.flatMap((s) => (s.analysis as unknown as SectionAnalysis).uncertain.map((u) => ({ ...u, section: at(u.page, s) })));
   if (uncertain.length) {
     insights.push({ kind: "CONTRADICTION", title: "Passages incertains ou ambigus", content: { items: uncertain } as unknown as Prisma.InputJsonValue, text: `Passages signalés comme incertains, ambigus ou contradictoires dans « ${ctx.doc.name} » :\n${uncertain.slice(0, 60).map((u) => `- ${u.text} (${formatSources([{ page: u.page, section: u.section }])})`).join("\n")}`, origin: "INFERRED", sources: uncertain.slice(0, 40).map((u) => ({ page: u.page, section: u.section })) as unknown as Prisma.InputJsonValue, sectionIds: [] });
   }
 
-  // 4. Remplacement atomique : les connaissances précédentes sont conservées (STALE) pour traçabilité, une version en arrière.
+  // 4. Remplacement atomique (les synthèses ne deviennent jamais des souvenirs automatiques : elles restent des
+  //    sources de recherche ; un point utile est mémorisé par l'utilisateur, via les contrôles de la mémoire). : les connaissances précédentes sont conservées (STALE) pour traçabilité, une version en arrière.
   await db.$transaction([
     db.documentInsight.deleteMany({ where: { documentId: ctx.doc.id, version: { lt: version - 1 } } }),
     db.documentInsight.updateMany({ where: { documentId: ctx.doc.id, status: "ACTIVE" }, data: { status: "STALE" } }),
     db.documentInsight.createMany({ data: insights.map((i) => ({ ...i, documentId: ctx.doc.id, projectId: ctx.doc.projectId, version, model: llm.model })) }),
   ]);
-  await syncProjectMemory(ctx, synthesis);
   ctx.progress.synthesize = { done: 4, total: 4, note: `${methods.length} méthode(s), ${defs.length} définition(s), ${insights.filter((i) => i.kind === "CONTRADICTION").length} point(s) de vigilance` };
   ctx.metrics.insights = insights.length;
   await saveProgress(ctx, "SYNTHESIZE", { analyzedAt: new Date() });
 }
 
-/** Mémoire de projet : une ligne décrivant le document (source DOCUMENT), remplacée à chaque nouvelle synthèse. */
-async function syncProjectMemory(ctx: Ctx, synthesis: Synthesis) {
-  const project = await db.project.findUnique({ where: { id: ctx.doc.projectId }, select: { userId: true, memoryEnabled: true } });
-  if (!project) return;
-  await db.memory.deleteMany({ where: { userId: project.userId, projectId: ctx.doc.projectId, source: "DOCUMENT", sourceDocumentId: ctx.doc.id } });
-  if (!project.memoryEnabled || !synthesis.overview) return;
-  const overview = synthesis.overview.replace(/\s+/g, " ");
-  const content = `Document du projet « ${ctx.doc.name} »${ctx.doc.unitCount ? ` (${ctx.doc.unitCount} ${ctx.kind === "PDF" ? "pages" : "parties"})` : ""} : ${overview.length > 300 ? `${overview.slice(0, 297)}…` : overview}`;
-  await db.memory.create({ data: { userId: project.userId, projectId: ctx.doc.projectId, kind: "FACT", content, topic: `document-${ctx.doc.id}`, source: "DOCUMENT", certainty: "STATED", importance: 3, sourceDocumentId: ctx.doc.id } });
-}
-
 // ---------------------------------------------------------------- orchestration
 
+async function extractPermanent(ctx: Ctx) {
+  try {
+    await extractStage(ctx);
+  } catch (err) {
+    if (err instanceof JobCancelled || ctx.signal.aborted) throw err;
+    // Échec d'un outil sur ce fichier (pas un délai dépassé) ou contenu vide : définitif.
+    if ((err instanceof ToolError && err.code !== "timeout") || /Aucun contenu exploitable|illisible|endommagé|non pris en charge/i.test(String(err))) {
+      throw new PermanentJobError(err instanceof Error ? err.message : String(err));
+    }
+    throw err;
+  }
+}
+
 const RUNNERS: Record<Stage, (ctx: Ctx) => Promise<void>> = {
-  EXTRACT: extractStage,
+  EXTRACT: extractPermanent,
   OCR: readStage,
   SEGMENT: segmentStage,
   EMBED: embedStage,
@@ -746,6 +790,7 @@ export async function runDocumentJob(rt: JobRuntime) {
   for (const stage of wanted) {
     if (STAGES.indexOf(stage) < startAt) continue;
     await rt.heartbeat();
+    rt.onStage?.(stage);
     await db.documentJob.update({ where: { id: rt.job.id }, data: { stage } });
     await db.projectDocument.update({ where: { id: doc.id }, data: { stage, status: doc.indexedAt || stage === "EMBED" || stage === "ANALYZE" || stage === "SYNTHESIZE" ? undefined : "PROCESSING" } });
     await RUNNERS[stage](ctx);

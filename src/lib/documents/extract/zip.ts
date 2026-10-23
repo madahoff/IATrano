@@ -16,15 +16,15 @@ export function readZip(data: Uint8Array, wanted: (name: string) => boolean, lim
     filter(file) {
       entries++;
       if (entries > limits.maxEntries) throw new ZipLimitError(`Archive suspecte : plus de ${limits.maxEntries} entrées.`);
-      if (!wanted(file.name)) return false;
-      if (file.name.includes("..") || file.name.startsWith("/")) return false;
+      // Contrôles sur TOUTES les entrées (y compris celles qu'on ne lit pas : un autre lecteur pourrait les décompresser).
       if (file.originalSize > limits.maxEntryBytes) throw new ZipLimitError(`Archive suspecte : l'entrée ${file.name} dépasse la taille autorisée une fois décompressée.`);
       if (file.size > 0 && file.originalSize / file.size > limits.maxRatio && file.originalSize > 10 * 1024 * 1024) {
         throw new ZipLimitError(`Archive suspecte : taux de compression anormal pour ${file.name}.`);
       }
       total += file.originalSize;
       if (total > limits.maxTotalBytes) throw new ZipLimitError("Archive suspecte : taille décompressée totale excessive.");
-      return true;
+      if (file.name.includes("..") || file.name.startsWith("/")) return false;
+      return wanted(file.name);
     },
   });
 }
@@ -41,4 +41,9 @@ export function xmlText(s: string) {
     .replace(/&#(\d+);/g, (_m, d: string) => String.fromCodePoint(Number(d)))
     .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&amp;/g, "&");
+}
+
+/** Vérifie les tailles annoncées d'une archive sans rien décompresser (avant de la confier à un autre lecteur). */
+export function assertSafeZip(data: Uint8Array, limits: ZipLimits = DEFAULT_ZIP_LIMITS) {
+  readZip(data, () => false, limits);
 }

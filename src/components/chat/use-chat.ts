@@ -6,6 +6,7 @@ import { readApiError } from "@/lib/client/api";
 import { createEventDecoder, type ChatRequestBody, type ContextStreamEvent, type MessageDTO, type StreamEvent } from "@/lib/chat/protocol";
 import type { ResearchDTO } from "@/lib/search/research-types";
 import type { ArtifactRef } from "@/lib/artifacts/types";
+import { getDocumentScope } from "./documents/scope-store";
 
 export type Notice = { code: string; message: string };
 export type UIMessage = MessageDTO & {
@@ -13,6 +14,8 @@ export type UIMessage = MessageDTO & {
   hint?: string;
   /** Page interactive en cours de création (mode interactif). */
   artifactBuilding?: { title: string; chars: number } | null;
+  /** Recherche dans les documents du projet en cours (étape affichée). */
+  documentStep?: string | null;
 };
 
 let tempSeq = 0;
@@ -83,6 +86,9 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
   const run = useCallback(
     async (body: ChatRequestBody, optimistic: (prev: UIMessage[]) => UIMessage[]): Promise<boolean> => {
       if (abortRef.current) return false;
+      // Documents choisis pour la conversation (sélecteur du projet) : enregistrés avec le message.
+      const scope = getDocumentScope();
+      if (scope.documentIds && body.documentIds === undefined && (!body.projectId || body.projectId === scope.projectId)) body = { ...body, documentIds: scope.documentIds };
       const ctrl = new AbortController();
       abortRef.current = ctrl;
       setIsStreaming(true);
@@ -244,6 +250,17 @@ export function useChat(initial: { conversationId: string | null; messages: Mess
               break;
             case "research_end":
               patchResearch((r) => ({ ...r, status: ev.status, queries: ev.queries, limitations: ev.limitations, error: ev.error }));
+              break;
+            case "documents_step":
+              patchAssistant((m) => ({ ...m, documentStep: ev.label }));
+              break;
+            case "documents":
+              patchAssistant((m) => ({ ...m, documentStep: null, documents: ev.retrieval }));
+              break;
+            case "doc_citations":
+              flush();
+              // Références [Dn] validées par le serveur (inventées retirées, soutien vérifié).
+              patchAssistant((m) => ({ ...m, content: ev.content, documents: m.documents ? { ...m.documents, cited: ev.cited, checks: ev.checks } : m.documents }));
               break;
             case "citations":
               flush();

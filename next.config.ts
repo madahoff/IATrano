@@ -7,7 +7,15 @@ const nextConfig: NextConfig = {
   partialPrefetching: false,
   output: "standalone",
   poweredByHeader: false,
-  serverExternalPackages: ["@prisma/client", ".prisma/client"],
+  // tesseract.js (OCR) lance un worker Node dont le script et le WebAssembly sont chargés par chemin à l'exécution :
+  // paquet externe (non empaqueté) et fichiers ajoutés explicitement à la sortie standalone.
+  serverExternalPackages: ["@prisma/client", ".prisma/client", "tesseract.js"],
+  outputFileTracingIncludes: {
+    "/*": [
+      "./node_modules/.pnpm/tesseract.js@*/node_modules/**/*",
+      "./node_modules/.pnpm/tesseract.js-core@*/node_modules/tesseract.js-core/*.{js,wasm}",
+    ],
+  },
   async headers() {
     return [
       {

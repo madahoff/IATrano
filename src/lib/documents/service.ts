@@ -185,19 +185,17 @@ export async function reprocessDocument(userId: string, projectId: string, docum
 
 /**
  * Suppression : fichiers (original, pages rendues, images clés, audio), pages, segments et index, sections,
- * connaissances, versions, traitements, et souvenirs de projet issus du document. Les traces de récupération
- * des réponses passées conservent seulement les métadonnées déjà affichées (nom, page, extrait court).
+ * connaissances, versions et traitements. Les souvenirs que l'utilisateur a choisi de garder à partir du document
+ * sont conservés (lien vers le document retiré). Les traces de récupération des réponses passées conservent
+ * seulement les métadonnées déjà affichées (nom, page, extrait).
  */
 export async function deleteDocument(userId: string, projectId: string, documentId: string) {
-  const project = await getOwnedProject(userId, projectId);
+  await getOwnedProject(userId, projectId);
   const doc = await db.projectDocument.findFirst({ where: { id: documentId, projectId }, select: { id: true } });
   if (!doc) throw notFound("Document introuvable.");
   const jobs = await db.documentJob.findMany({ where: { documentId, status: { in: ["PENDING", "RUNNING"] } }, select: { id: true } });
   abortDocumentJobs(jobs.map((j) => j.id));
-  await db.$transaction([
-    db.memory.deleteMany({ where: { userId: project.userId, projectId, source: "DOCUMENT", sourceDocumentId: documentId } }),
-    db.projectDocument.delete({ where: { id: documentId } }),
-  ]);
+  await db.projectDocument.delete({ where: { id: documentId } });
   dropVectorCache(documentId);
   await removeDocumentFiles(projectId, documentId);
 }

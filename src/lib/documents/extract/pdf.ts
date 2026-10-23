@@ -1,5 +1,4 @@
 import "server-only";
-import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { runTool } from "../tools";
 import type { ExtractedUnit } from "../types";
@@ -53,12 +52,8 @@ export async function extractPdfPages(file: string, from: number, to: number, si
 /** Rend une page en PNG (niveaux de gris) pour l'OCR ou l'analyse visuelle. */
 export async function renderPdfPage(file: string, page: number, outDirAbs: string, dpi = 200, signal?: AbortSignal): Promise<string> {
   const base = path.join(outDirAbs, `page-${String(page).padStart(5, "0")}`);
-  await runTool("pdftoppm", ["-f", String(page), "-l", String(page), "-r", String(dpi), "-gray", "-png", "-singlefile", file, base], { timeoutMs: 120_000, signal });
+  // -scale-to borne le côté le plus long : une page au format démesuré ne produit pas une image géante.
+  await runTool("pdftoppm", ["-f", String(page), "-l", String(page), "-r", String(dpi), "-scale-to", "2800", "-gray", "-png", "-singlefile", file, base], { timeoutMs: 120_000, signal });
   return `${base}.png`;
 }
 
-export async function readAndRemove(file: string) {
-  const data = await readFile(file);
-  await rm(file, { force: true });
-  return data;
-}

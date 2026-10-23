@@ -11,6 +11,7 @@ import { Markdown } from "./markdown";
 import { ThinkingBlock } from "./thinking-block";
 import { ResearchPanel } from "./research-panel";
 import { SourcesSummary } from "./sources";
+import { DocSourcesSummary, DocumentsProgress } from "./documents/doc-sources";
 import { RoutingTags } from "./routing/routing-tags";
 import { ArtifactBuilding, ArtifactCard } from "./artifacts/artifact-card";
 import type { UIMessage } from "./use-chat";
@@ -121,9 +122,10 @@ export const AssistantMessage = memo(function AssistantMessage({
     <div className="group/msg flex flex-col">
       {message.routing && <RoutingTags routing={message.routing} />}
       {research && <ResearchPanel research={research} answerStarted={hasText} />}
+      {streaming && message.documentStep && <DocumentsProgress step={message.documentStep} />}
       {showThinking && <ThinkingBlock thinking={message.thinking!} active={streaming} answerStarted={hasText} />}
 
-      {hasText && <Markdown content={message.content} sources={citeSources} streaming={streaming} />}
+      {hasText && <Markdown content={message.content} sources={citeSources} documents={message.documents} streaming={streaming} />}
       {streaming && hasText && !message.artifactBuilding && <span className="mt-1 inline-block h-4 w-1.5 animate-pulse rounded-full bg-foreground/50" aria-hidden />}
       {message.artifactBuilding && <ArtifactBuilding title={message.artifactBuilding.title} chars={message.artifactBuilding.chars} />}
       {onOpenArtifact && message.artifacts.map((a) => <ArtifactCard key={a.key} artifact={a} active={a.key === openArtifactKey} onOpen={onOpenArtifact} />)}
@@ -137,6 +139,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </p>
         ))}
 
+      {message.documents && !streaming && <DocSourcesSummary documents={message.documents} />}
       {research && !streaming && <SourcesSummary sources={research.sources} cited={research.cited ?? (message.status === "COMPLETE" ? null : [])} />}
 
       {message.status === "ERROR" && (

@@ -11,7 +11,9 @@ export type OcrResult = { text: string; confidence: number | null; engine: "tess
 
 type Worker = { recognize: (image: string) => Promise<{ data: { text: string; confidence: number } }>; terminate: () => Promise<unknown> };
 
-const g = globalThis as unknown as { __iatranoOcr?: { langs: string; worker: Promise<Worker> } };
+// `active` : reconnaissances en cours sur ce worker partagé (chat et traitement des documents de projet).
+type SharedWorker = { langs: string; worker: Promise<Worker>; active: number };
+const g = globalThis as unknown as { __iatranoOcr?: SharedWorker };
 
 async function jsWorker(langs: string): Promise<Worker> {
   if (g.__iatranoOcr?.langs === langs) return g.__iatranoOcr.worker;
@@ -22,7 +24,7 @@ async function jsWorker(langs: string): Promise<Worker> {
     const { createWorker } = await import("tesseract.js");
     return (await createWorker(langs.split("+"), 1, { cachePath, logger: () => {} })) as unknown as Worker;
   })();
-  g.__iatranoOcr = { langs, worker };
+  g.__iatranoOcr = { langs, worker, active: 0 };
   worker.catch(() => {
     if (g.__iatranoOcr?.worker === worker) g.__iatranoOcr = undefined;
   });
@@ -52,25 +54,36 @@ export async function ocrImage(file: string, langs: string, signal?: AbortSignal
     ]);
     return { text: text.stdout.toString("utf8").trim(), confidence: tsvConfidence(tsv.stdout.toString("utf8")), engine: "tesseract" };
   }
-  const worker = await jsWorker(langs);
   let timer: NodeJS.Timeout | undefined;
+  // Le démarrage du worker est lui aussi soumis au délai et à l'annulation (il peut ne jamais aboutir).
+  const job = jsWorker(langs).then((worker) => {
+    if (signal?.aborted) throw new Error("OCR annulé.");
+    return worker.recognize(file);
+  });
+  job.catch(() => {}); // perdant éventuel de la course ci-dessous : son rejet ne doit pas remonter
+  // jsWorker enregistre le worker de façon synchrone (sauf échec immédiat, où il n'y a rien à suivre).
+  const used = g.__iatranoOcr;
+  if (used) used.active++;
   try {
     const result = await Promise.race([
-      worker.recognize(file),
+      job,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("OCR : délai dépassé (3 min) pour cette image.")), 180_000);
+        if (signal?.aborted) reject(new Error("OCR annulé."));
         signal?.addEventListener("abort", () => reject(new Error("OCR annulé.")), { once: true });
       }),
     ]);
     return { text: result.data.text.trim(), confidence: Number.isFinite(result.data.confidence) ? result.data.confidence / 100 : null, engine: "tesseract.js" };
   } catch (err) {
-    // Un worker bloqué est recréé au prochain appel.
-    if (g.__iatranoOcr) {
-      void g.__iatranoOcr.worker.then((w) => w.terminate()).catch(() => {});
+    // Délai dépassé ou annulation : le worker est arrêté (ce qui interrompt la reconnaissance) puis recréé au
+    // prochain appel — seulement s'il s'agit toujours du worker courant et qu'aucune autre requête ne l'utilise.
+    if (used && used.active === 1 && g.__iatranoOcr === used) {
+      void used.worker.then((w) => w.terminate()).catch(() => {});
       g.__iatranoOcr = undefined;
     }
     throw err;
   } finally {
+    if (used) used.active--;
     clearTimeout(timer);
   }
 }

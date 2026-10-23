@@ -26,6 +26,8 @@ export type ExploreResult = {
     type: SegmentKind;
     startMs: number | null;
     endMs: number | null;
+    /** Transcription : horodatage de la phrase où le terme apparaît (plus précis que le début du passage) */
+    matchMs: number | null;
     snippet: string;
     score: number;
     ranks: Record<string, number>;
@@ -58,6 +60,7 @@ export async function searchProjectDocuments(
     type: r.type,
     startMs: r.startMs,
     endMs: r.endMs,
+    matchMs: matchTimestamp(r.content, input.mode === "hybrid" ? terms : [input.q.replace(/[«»"“”]/g, "")]) ?? r.startMs,
     snippet: snippetAround(r.content, input.mode === "hybrid" ? terms : [input.q.replace(/[«»"“”]/g, "")], 360),
     score,
     ranks,
@@ -76,4 +79,20 @@ export async function searchProjectDocuments(
   }
   const r = await hybridSearch(input.q, filters, { limit: 30 });
   return { ...empty, total: r.hits.length, semantic: r.semanticUsed, semanticError: r.semanticError, durationMs: Date.now() - started, results: r.hits.map((h) => shape(h, h.score, h.ranks as Record<string, number>)) };
+}
+
+/** Horodatage « [hh:mm:ss] » qui précède la première occurrence d'un des termes (insensible aux accents). */
+export function matchTimestamp(content: string, terms: string[]): number | null {
+  const fold = (x: string) => x.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const text = fold(content);
+  const stamps = [...content.matchAll(/\[(\d{2}):(\d{2}):(\d{2})\]/g)].map((m) => ({ at: m.index, ms: (Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000 }));
+  if (!stamps.length) return null;
+  // Ligne qui contient le plus de termes : la phrase la plus pertinente.
+  let best: { ms: number; score: number } | null = null;
+  for (const [i, s] of stamps.entries()) {
+    const line = text.slice(s.at, stamps[i + 1]?.at ?? text.length);
+    const score = terms.filter((t) => t.length > 2 && line.includes(fold(t))).length;
+    if (score > 0 && (!best || score > best.score)) best = { ms: s.ms, score };
+  }
+  return best?.ms ?? null;
 }

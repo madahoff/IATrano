@@ -244,7 +244,7 @@ export function RoutingSettingsView({ initial }: { initial: RoutingSettingsInput
 
       <Panel className="flex gap-3 text-sm text-muted-foreground">
         <Info className="mt-0.5 size-4 shrink-0" />
-        <p>Dans tous les modes, l&apos;utilisateur peut forcer ou désactiver un mode pour un message avec les boutons sous le champ de saisie : son choix prime sur JEV, sauf si le mode est interdit ici. Chaque décision (proposée, acceptée, refusée, forcée) est enregistrée dans le journal.</p>
+        <p>Dans tous les modes, l&apos;utilisateur peut forcer ou désactiver un mode pour un message dans le panneau « Options » sous le champ de saisie : son choix prime sur JEV, sauf si le mode est interdit ici. Chaque décision (proposée, acceptée, refusée, forcée) est enregistrée dans le journal.</p>
       </Panel>
     </>
   );

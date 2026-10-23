@@ -3,7 +3,7 @@
 
 export type PdfPage =
   | { kind: "text"; lines: Array<string | { text: string; size?: number; bold?: boolean }> }
-  | { kind: "image"; jpeg: Buffer; width: number; height: number };
+  | { kind: "image"; jpeg: Buffer; width: number; height: number; components?: 1 | 3 };
 
 function latin1(text: string) {
   // Caractères hors Latin-1 remplacés : le jeu de test n'en contient pas, mais on reste robuste.
@@ -46,7 +46,7 @@ export function buildPdf(pages: PdfPage[], info: { title?: string; author?: stri
       content = Buffer.concat(parts);
       resources = `<< /Font << /F1 ${font} 0 R /F2 ${fontBold} 0 R >> >>`;
     } else {
-      const img = add(Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`), page.jpeg, Buffer.from("\nendstream")]));
+      const img = add(Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /${page.components === 3 ? "DeviceRGB" : "DeviceGray"} /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`), page.jpeg, Buffer.from("\nendstream")]));
       content = Buffer.from(`q 595 0 0 842 0 0 cm /Im1 Do Q\n`);
       resources = `<< /XObject << /Im1 ${img} 0 R >> >>`;
     }

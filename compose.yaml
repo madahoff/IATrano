@@ -98,6 +98,14 @@ services:
       JEV_PROTOCOL: ${JEV_PROTOCOL:-http}
       JEV_API_KEY: ${JEV_API_KEY:-}
       JEV_TIMEOUT_SEC: ${JEV_TIMEOUT_SEC:-10}
+      # Bibliothèque documentaire (modifiable ensuite dans Administration → Documents)
+      DOCUMENT_EMBEDDING_MODEL: ${DOCUMENT_EMBEDDING_MODEL:-}
+      DOCUMENT_TRANSCRIPTION_URL: ${DOCUMENT_TRANSCRIPTION_URL:-}
+      DOCUMENT_TRANSCRIPTION_MODEL: ${DOCUMENT_TRANSCRIPTION_MODEL:-}
+      DOCUMENT_VISION_MODEL: ${DOCUMENT_VISION_MODEL:-}
+    # Fichiers originaux des documents et dérivés (pages rendues, images clés, audio) : à sauvegarder avec la base.
+    volumes:
+      - iatrano-documents:/app/data/documents
     # Permet au conteneur de joindre un moteur IA installé sur la machine hôte (Linux compris).
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -106,3 +114,4 @@ services:
 
 volumes:
   iatrano-db:
+  iatrano-documents:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, FolderKanban, Menu, PanelLeftOpen, Sparkles, SquarePen, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -28,15 +28,16 @@ import { JevStatusPill } from "@/components/jev/jev-status-pill";
 import { ArtifactPanel } from "./artifacts/artifact-panel";
 import { toArtifactRef, type ArtifactDTO } from "@/lib/artifacts/types";
 import { cn } from "@/lib/utils";
-import { AuthModeSelector, ModeButtons, RoutingHelp } from "./routing/mode-controls";
+import { activeOptions, ChatOptions } from "./routing/mode-controls";
 import { RoutingConfirmationCard } from "./routing/confirmation-card";
+import { DocumentScopeButton } from "./documents/document-scope";
 import { useRouting, type Dispatch } from "./routing/use-routing";
 import { ROUTING_MODES, type AuthMode, type RoutingMode } from "@/lib/routing/config";
 import type { Availability, Overrides } from "@/lib/routing/decide";
 
 const pokeMascot = () => mascotAudio.play("poke");
 
-type InitialConversation = { id?: string; title?: string; model?: string | null; webSearch?: boolean; projectId?: string | null; messages?: MessageDTO[] } | null;
+type InitialConversation = { id?: string; title?: string; model?: string | null; webSearch?: boolean; projectId?: string | null; documentIds?: string[]; messages?: MessageDTO[] } | null;
 
 export function ChatView({ conversation }: { conversation: InitialConversation }) {
   const { models, upsertConversation, startNewChat } = useApp();
@@ -421,18 +422,29 @@ export function ChatView({ conversation }: { conversation: InitialConversation }
                     <X className="size-3.5" />
                   </Button>
                 )}
-                <ModeButtons
-                  authMode={authMode}
-                  overrides={overrides}
-                  availability={availability}
-                  forbidden={forbidden}
-                  visible={visibleModes}
-                  onChange={(m, v) => setOverrides((o) => ({ ...o, [m]: v }))}
-                />
-                <AuthModeSelector value={authMode} onChange={changeAuthMode} disabled={busy} />
-                <RoutingHelp />
               </>
             }
+            options={
+              <ChatOptions
+                authMode={authMode}
+                overrides={overrides}
+                availability={availability}
+                forbidden={forbidden}
+                visible={visibleModes}
+                onChange={(m, v) => setOverrides((o) => ({ ...o, [m]: v }))}
+                onAuthModeChange={changeAuthMode}
+                authDisabled={busy}
+                tools={
+                  projectId && (
+                    // Choix des documents du projet interrogés ; reste monté panneau replié (il porte la sélection).
+                    <Suspense fallback={null}>
+                      <DocumentScopeButton key={chat.conversationId ?? "new"} projectId={projectId} conversationId={chat.conversationId} initial={conversation?.documentIds} />
+                    </Suspense>
+                  )
+                }
+              />
+            }
+            activeOptions={activeOptions(overrides, authMode === "OFF", visibleModes)}
             placeholder={
               editingArtifact
                 ? "Décrivez la modification (ex. : agrandis le graphique)"

@@ -3,21 +3,24 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type DocumentJob } from "@prisma/client";
 import { db } from "@/lib/db";
 import { errorDetails, logEvent } from "@/lib/logger";
-import { JobCancelled, runDocumentJob } from "./pipeline";
+import { JobCancelled, PermanentJobError, runDocumentJob } from "./pipeline";
 import { getDocumentSettings } from "./settings";
 
 // File de traitement persistante (table DocumentJob) consommée en arrière-plan par le serveur Next.js :
 //  - réservation par bail (FOR UPDATE SKIP LOCKED + lockedAt) : plusieurs processus peuvent coexister ;
 //  - bail prolongé à chaque étape ; un traitement dont le processus a disparu est repris après 2 minutes ;
 //  - nouvelles tentatives avec délai croissant (3 au maximum), puis échec visible et relançable ;
-//  - concurrence bornée (réglage « documents traités simultanément »).
+//  - concurrence bornée (réglage « documents traités simultanément »), plus une voie rapide : quand tous les
+//    traitements en cours en sont à l'analyse par le LLM (longue), un document pas encore indexé peut démarrer
+//    pour devenir interrogeable sans attendre (extraction et index n'utilisent pas le GPU).
 // Désactivable par DOCUMENT_WORKER=off (ex. processus dédié aux tests).
 
 const LEASE_MS = 120_000;
 const MAX_ATTEMPTS = 3;
 const POLL_MS = 3000;
 
-type WorkerState = { id: string; running: Map<string, AbortController>; timer: NodeJS.Timeout | null; started: boolean };
+type Running = { controller: AbortController; stage: string };
+type WorkerState = { id: string; running: Map<string, Running>; timer: NodeJS.Timeout | null; started: boolean };
 const g = globalThis as unknown as { __iatranoDocWorker?: WorkerState };
 const state: WorkerState = (g.__iatranoDocWorker ??= { id: `${process.pid}-${randomUUID().slice(0, 8)}`, running: new Map(), timer: null, started: false });
 
@@ -25,14 +28,18 @@ export function workerEnabled() {
   return process.env.DOCUMENT_WORKER !== "off";
 }
 
-async function claim(): Promise<DocumentJob | null> {
+const LATE_STAGES = ["ANALYZE", "SYNTHESIZE"];
+
+async function claim(opts: { indexingOnly?: boolean } = {}): Promise<DocumentJob | null> {
+  // Voie rapide : seulement un document qui n'a pas encore été indexé (traitement complet, pas un retraitement d'analyse).
+  const filter = opts.indexingOnly ? Prisma.sql`AND "stage" NOT IN ('ANALYZE', 'SYNTHESIZE') AND NOT ('ANALYZE' = ANY("stages") AND NOT ('EXTRACT' = ANY("stages")))` : Prisma.empty;
   const rows = await db.$queryRaw<DocumentJob[]>`
     UPDATE "DocumentJob" SET "status" = 'RUNNING', "lockedAt" = now(), "lockedBy" = ${state.id}, "attempts" = "attempts" + 1,
       "startedAt" = COALESCE("startedAt", now()), "updatedAt" = now()
     WHERE id = (
       SELECT id FROM "DocumentJob"
-      WHERE ("status" = 'PENDING' AND "nextAttemptAt" <= now())
-         OR ("status" = 'RUNNING' AND "lockedAt" < now() - make_interval(secs => ${LEASE_MS / 1000}))
+      WHERE (("status" = 'PENDING' AND "nextAttemptAt" <= now())
+         OR ("status" = 'RUNNING' AND "lockedAt" < now() - make_interval(secs => ${LEASE_MS / 1000}))) ${filter}
       ORDER BY "createdAt" ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -43,7 +50,8 @@ async function claim(): Promise<DocumentJob | null> {
 
 async function execute(job: DocumentJob) {
   const controller = new AbortController();
-  state.running.set(job.id, controller);
+  const entry: Running = { controller, stage: job.stage };
+  state.running.set(job.id, entry);
   const metrics: Record<string, number> = { ...((job.metrics as Record<string, number>) ?? {}) };
   const started = Date.now();
   try {
@@ -51,6 +59,10 @@ async function execute(job: DocumentJob) {
       job,
       signal: controller.signal,
       metrics,
+      onStage: (stage) => {
+        entry.stage = stage;
+        if (LATE_STAGES.includes(stage)) nudgeWorker();
+      },
       heartbeat: async (patch) => {
         if (controller.signal.aborted) throw new JobCancelled();
         const r = await db.documentJob.updateMany({
@@ -72,7 +84,7 @@ async function execute(job: DocumentJob) {
       return;
     }
     const message = err instanceof Error ? err.message.slice(0, 500) : "Erreur inattendue.";
-    const retry = job.attempts < MAX_ATTEMPTS;
+    const retry = job.attempts < MAX_ATTEMPTS && !(err instanceof PermanentJobError);
     await db.documentJob.updateMany({
       where: { id: job.id, lockedBy: state.id },
       data: retry
@@ -103,6 +115,11 @@ async function tick() {
       if (!job) break;
       void execute(job);
     }
+    const busy = [...state.running.values()];
+    if (busy.length === settings.concurrency && busy.every((r) => LATE_STAGES.includes(r.stage))) {
+      const job = await claim({ indexingOnly: true });
+      if (job) void execute(job);
+    }
   } catch (err) {
     await logEvent("WARN", "documents", "File de traitement indisponible", errorDetails(err)).catch(() => {});
   } finally {
@@ -127,7 +144,7 @@ export function nudgeWorker() {
 
 /** Interrompt le traitement en cours d'un document dans ce processus (suppression, retraitement). */
 export function abortDocumentJobs(jobIds: string[]) {
-  for (const id of jobIds) state.running.get(id)?.abort();
+  for (const id of jobIds) state.running.get(id)?.controller.abort();
 }
 
 /** Exécute immédiatement les traitements en attente dans ce processus (tests, scripts). */

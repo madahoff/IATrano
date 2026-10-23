@@ -97,8 +97,9 @@ export type SupportCheck = { n: number; supported: boolean; score: number };
 
 /**
  * Pour chaque référence [Dn], compare la phrase qui la porte au passage cité. Score = part des racines
- * significatives de la phrase présentes dans le passage (moyenne sur les usages). Les nombres de la phrase
- * doivent figurer dans le passage : un chiffre absent de la source rend la référence non étayée.
+ * significatives de la phrase présentes dans le passage ; on retient le plus faible des usages (un passage cité
+ * une seule fois à tort suffit à alerter). Les nombres de la phrase doivent figurer dans le passage : un chiffre
+ * absent de la source rend la référence non étayée.
  */
 export function checkCitationSupport(answer: string, passages: ReadonlyMap<number, string>): SupportCheck[] {
   const usage = new Map<number, number[]>();
@@ -126,7 +127,7 @@ export function checkCitationSupport(answer: string, passages: ReadonlyMap<numbe
     }
   }
   return [...usage].map(([n, scores]) => {
-    const score = Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100;
+    const score = Math.round(Math.min(...scores) * 100) / 100;
     return { n, score, supported: score >= 0.25 };
   });
 }

@@ -13,13 +13,17 @@ const NAMED_HEADING = /^(chapitre|chapter|partie|part|section|annexe|appendix|ti
 const CAPTION = /^(?:>\s*)?(?:l[ée]gende\s*:\s*|(?:figure|fig\.|tableau|table|illustration|graphique|sch[ée]ma|image|photo|diagramme)\s*\d+[a-z]?\s*[.:–-])/i;
 const SENTENCE_END = /[.!?:;»")\]]$/;
 
-/** Lignes répétées en haut ou en bas de nombreuses pages (titres courants, numéros) : exclues des segments. */
+/**
+ * Lignes répétées en haut ou en bas de nombreuses pages (titres courants, numéros) : exclues des segments.
+ * Une phrase complète (plus de 8 mots, ponctuation finale) n'est jamais considérée comme un en-tête, même si
+ * sa structure se répète d'une page à l'autre (« Le relevé n° 12 de la page… »).
+ */
 export function detectBoilerplate(units: Array<Pick<ExtractedUnit, "text">>): Set<string> {
   if (units.length < 6) return new Set();
   const counts = new Map<string, number>();
   for (const u of units) {
     const lines = u.text.split("\n").map((l) => l.trim()).filter(Boolean);
-    const edge = new Set([...lines.slice(0, 2), ...lines.slice(-2)].map(boilerKey));
+    const edge = new Set([...lines.slice(0, 2), ...lines.slice(-2)].filter((l) => !(l.split(/\s+/).length > 8 && /[.!?]$/.test(l))).map(boilerKey));
     for (const k of edge) counts.set(k, (counts.get(k) ?? 0) + 1);
   }
   const min = Math.max(4, Math.ceil(units.length * 0.3));
@@ -56,6 +60,8 @@ function isTableRow(line: string) {
 export function parseBlocks(units: ExtractedUnit[], opts: { plain: boolean | ((unit: ExtractedUnit) => boolean); boilerplate?: Set<string> }): Block[] {
   const blocks: Block[] = [];
   const boiler = opts.boilerplate ?? new Set<string>();
+  // Titre courant (« Chapitre 3 Méthodes » en haut de chaque page) : sa première occurrence reste le titre de section.
+  const seenRunningHeads = new Set<string>();
   for (const unit of units) {
     if (unit.status === "FAILED" || unit.status === "SKIPPED" || !unit.text.trim()) continue;
     const source: SegmentKind = unit.method === "OCR" ? "OCR" : unit.method === "TRANSCRIPT" ? "TRANSCRIPT" : unit.method === "KEYFRAME" ? "VISUAL" : "TEXT";
@@ -84,7 +90,10 @@ export function parseBlocks(units: ExtractedUnit[], opts: { plain: boolean | ((u
         flush();
         continue;
       }
-      if (plain && boiler.has(boilerKey(line))) continue;
+      if (plain && boiler.has(boilerKey(line))) {
+        if (!headingOf(line, true) || seenRunningHeads.has(line)) continue;
+        seenRunningHeads.add(line);
+      }
       if (plain && /^(?:page\s*)?\d{1,4}(?:\s*(?:\/|sur|of)\s*\d{1,4})?$/i.test(line)) continue;
       if (isTableRow(line)) {
         flush();
@@ -295,7 +304,7 @@ export function buildStructure(blocks: Block[], title: string, opts: SegmentOpti
     s.tokenCount = countTextTokens(parts.join("\n"));
     s.contentHash = hashText(`${s.path.join(">")}\n${parts.join("\n")}`);
   }
-  return { sections: sections.map(({ blocks: _b, ...rest }) => rest), segments };
+  return { sections: sections.map((s) => ({ ordinal: s.ordinal, level: s.level, title: s.title, path: s.path, pageStart: s.pageStart, pageEnd: s.pageEnd, startMs: s.startMs, endMs: s.endMs, tokenCount: s.tokenCount, contentHash: s.contentHash, text: s.text })), segments };
 }
 
 const sourceOf = (b: Block): SegmentKind => (b.type === "heading" ? "TEXT" : b.source);

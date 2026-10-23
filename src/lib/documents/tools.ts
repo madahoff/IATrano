@@ -63,7 +63,7 @@ export async function runTool(
   if (!bin) throw new ToolError(`Outil « ${name} » introuvable sur le serveur. ${MISSING_HINTS[name]}`, "missing");
   return new Promise((resolve, reject) => {
     execFile(
-      bin,
+      /* turbopackIgnore: true */ bin,
       args,
       { timeout: opts.timeoutMs ?? 120_000, maxBuffer: opts.maxBuffer ?? 64 * 1024 * 1024, encoding: "buffer", killSignal: "SIGKILL", signal: opts.signal, windowsHide: true },
       (err, stdout, stderr) => {

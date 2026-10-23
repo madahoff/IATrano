@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Activity, Bot, Gauge, Globe, Route, ScrollText, Signpost, Users } from "lucide-react";
+import { Activity, Bot, Gauge, Globe, Route, ScrollText, Signpost, Users, Library } from "lucide-react";
 import { NavLinks, PageShell } from "@/components/layout/page-shell";
 import { JevStatusPill } from "@/components/jev/jev-status-pill";
 
@@ -12,6 +12,7 @@ const ITEMS = [
   { href: "/admin/routing", label: "Routage et autorisations", icon: <Route /> },
   { href: "/admin/search", label: "Recherche Web", icon: <Globe /> },
   { href: "/admin/context", label: "Contexte et mémoire", icon: <Gauge /> },
+  { href: "/admin/documents", label: "Documents", icon: <Library /> },
   { href: "/admin/users", label: "Utilisateurs", icon: <Users /> },
   { href: "/admin/logs", label: "Journal", icon: <ScrollText /> },
 ];

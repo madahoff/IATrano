@@ -1,12 +1,20 @@
-# IATrano — déploiement Docker Compose (local ou Dokploy).
-#   cp .env.example .env   # puis renseigner les variables obligatoires
-#   docker compose up --build -d
+# IATrano — déploiement de production (Dokploy ou Docker Compose).
+# Procédure complète : docs/DEPLOIEMENT.md. Variables : .env.production.example (contrôle : node scripts/check-env.mjs).
 #
-# Le moteur IA (Ollama, LM Studio…) n'est PAS inclus : l'application réutilise celui qui tourne déjà
-# sur la machine hôte ou sur une autre machine du réseau (voir AI_BASE_URL et le README).
-# Le moteur de recherche SearXNG (recherche Web du chat) est inclus, sans port publié.
+# Aucun port n'est publié sur la machine hôte : l'application est servie par le reverse proxy (Traefik de Dokploy,
+# domaine configuré sur le service `app`, port 3000). Pour un accès direct sans reverse proxy :
+#   docker compose -f compose.yaml -f compose.ports.yaml up -d --build
+#
+# Le moteur IA (Ollama…) et JEV ne sont PAS inclus : l'application joint ceux qui tournent déjà sur l'hôte ou sur le
+# réseau (AI_BASE_URL, JEV_HOST). SearXNG (recherche Web) est inclus, joignable seulement sur le réseau interne.
 
 name: iatrano
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   db:
@@ -14,26 +22,34 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-iatrano}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définissez POSTGRES_PASSWORD dans .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définissez POSTGRES_PASSWORD (openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-iatrano}
     volumes:
       - iatrano-db:/var/lib/postgresql/data
     # Aucun port publié : PostgreSQL n'est joignable que par les services de ce fichier.
+    shm_size: 256m
+    stop_grace_period: 60s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: ${DB_MEMORY_LIMIT:-2g}
+    logging: *logging
 
   # Moteur de recherche auto-hébergé utilisé par la recherche Web (API JSON, réseau interne uniquement).
   searxng:
-    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    build:
+      context: ./searxng
+      args:
+        SEARXNG_IMAGE: ${SEARXNG_IMAGE:-searxng/searxng:2026.10.23-629368e40}
     restart: unless-stopped
     environment:
-      SEARXNG_SECRET: ${SEARXNG_SECRET:?Définissez SEARXNG_SECRET dans .env (openssl rand -hex 32)}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Définissez SEARXNG_SECRET (openssl rand -hex 32)}
       SEARXNG_BASE_URL: http://searxng:8080/
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     # Aucun port publié : seul le service app l'interroge (http://searxng:8080).
     cap_drop:
       - ALL
@@ -41,32 +57,49 @@ services:
       - CHOWN
       - SETGID
       - SETUID
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     logging:
       driver: json-file
       options:
         max-size: "1m"
         max-file: "1"
 
+  # Applique les migrations en attente (`prisma migrate deploy` : jamais de reset) puis s'arrête.
   migrate:
     build:
       context: .
       target: migrator
       args:
-        NODE_VERSION: ${NODE_VERSION:-22-alpine}
+        NODE_VERSION: ${NODE_VERSION:-22.23.4-alpine}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-iatrano}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-iatrano}
     depends_on:
       db:
         condition: service_healthy
     restart: "no"
+    logging: *logging
 
   app:
     build:
       context: .
       target: runner
       args:
-        NODE_VERSION: ${NODE_VERSION:-22-alpine}
+        NODE_VERSION: ${NODE_VERSION:-22.23.4-alpine}
+        WITH_FFMPEG: ${WITH_FFMPEG:-true}
+        WITH_TESSERACT: ${WITH_TESSERACT:-true}
     restart: unless-stopped
+    # tini en PID 1 : transmet SIGTERM au serveur Node et récupère les processus enfants (pdftoppm, ffmpeg, tesseract).
+    init: true
+    stop_grace_period: 30s
     depends_on:
       db:
         condition: service_healthy
@@ -77,15 +110,16 @@ services:
         condition: service_started
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-iatrano}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-iatrano}
-      AUTH_SECRET: ${AUTH_SECRET:?Définissez AUTH_SECRET dans .env (openssl rand -base64 48)}
-      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:?Définissez SUPERADMIN_EMAIL dans .env}
-      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:?Définissez SUPERADMIN_PASSWORD dans .env}
+      AUTH_SECRET: ${AUTH_SECRET:?Définissez AUTH_SECRET (openssl rand -base64 48)}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:?Définissez SUPERADMIN_EMAIL}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:?Définissez SUPERADMIN_PASSWORD (12 caractères minimum)}
       SUPERADMIN_NAME: ${SUPERADMIN_NAME:-Super administrateur}
       AI_PROVIDER: ${AI_PROVIDER:-ollama}
       AI_BASE_URL: ${AI_BASE_URL:-http://host.docker.internal:11434}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_URL_ALLOWLIST: ${AI_URL_ALLOWLIST:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      # Sûr ici : sans port publié, toute requête passe par Traefik, qui réécrit X-Forwarded-For.
       TRUST_PROXY: ${TRUST_PROXY:-true}
       RATE_LIMIT_GENERATIONS_PER_MINUTE: ${RATE_LIMIT_GENERATIONS_PER_MINUTE:-20}
       # Recherche Web (modifiable ensuite dans Administration → Recherche Web)
@@ -98,19 +132,28 @@ services:
       JEV_PROTOCOL: ${JEV_PROTOCOL:-http}
       JEV_API_KEY: ${JEV_API_KEY:-}
       JEV_TIMEOUT_SEC: ${JEV_TIMEOUT_SEC:-10}
-      # Bibliothèque documentaire (modifiable ensuite dans Administration → Documents)
+      # Bibliothèque documentaire (valeurs initiales, modifiables ensuite dans Administration → Documents)
       DOCUMENT_EMBEDDING_MODEL: ${DOCUMENT_EMBEDDING_MODEL:-}
       DOCUMENT_TRANSCRIPTION_URL: ${DOCUMENT_TRANSCRIPTION_URL:-}
       DOCUMENT_TRANSCRIPTION_MODEL: ${DOCUMENT_TRANSCRIPTION_MODEL:-}
       DOCUMENT_VISION_MODEL: ${DOCUMENT_VISION_MODEL:-}
+      DOCUMENT_WORKER: ${DOCUMENT_WORKER:-}
+      # Mémoire du tas V8 : laisse de la marge sous la limite du conteneur pour pdftoppm, ffmpeg et tesseract.
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=2048}
     # Fichiers originaux des documents et dérivés (pages rendues, images clés, audio) : à sauvegarder avec la base.
     volumes:
       - iatrano-documents:/app/data/documents
-    # Permet au conteneur de joindre un moteur IA installé sur la machine hôte (Linux compris).
+    # Permet au conteneur de joindre les services installés sur la machine hôte (Ollama, JEV, Whisper).
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    ports:
-      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-3000}:3000"
+    expose:
+      - "3000"
+    deploy:
+      resources:
+        limits:
+          memory: ${APP_MEMORY_LIMIT:-4g}
+          cpus: "${APP_CPU_LIMIT:-4}"
+    logging: *logging
 
 volumes:
   iatrano-db:

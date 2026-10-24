@@ -1,9 +1,15 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { badRequest, notFound } from "@/lib/errors";
 import { removeProjectFiles } from "@/lib/documents/storage";
 
 export const MAX_PROJECTS_PER_USER = 50;
+
+// Violation de la contrainte unique (userId, name) : Prisma la signale par le code P2002, sans nommer la contrainte.
+function isDuplicateName(err: unknown) {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
 
 export type ProjectDTO = {
   id: string;
@@ -54,7 +60,7 @@ export async function createProject(userId: string, input: { name: string; descr
   try {
     return await db.project.create({ data: { userId, name, description: input.description?.trim() || null, instructions: input.instructions?.trim() || null } });
   } catch (err) {
-    if (String(err).includes("Project_userId_name_key")) throw badRequest("Un projet portant ce nom existe déjà.");
+    if (isDuplicateName(err)) throw badRequest("Un projet portant ce nom existe déjà.");
     throw err;
   }
 }
@@ -63,7 +69,13 @@ export async function updateProject(userId: string, id: string, input: { name?: 
   await getOwnedProject(userId, id);
   const name = input.name?.trim();
   if (name !== undefined && !name) throw badRequest("Le nom du projet est vide.");
-  return db.project.update({ where: { id }, data: { name, description: input.description === undefined ? undefined : input.description?.trim() || null, instructions: input.instructions === undefined ? undefined : input.instructions?.trim() || null, memoryEnabled: input.memoryEnabled, documentsEnabled: input.documentsEnabled } });
+  if (name && name.length > 100) throw badRequest("Le nom du projet ne doit pas dépasser 100 caractères.");
+  try {
+    return await db.project.update({ where: { id }, data: { name, description: input.description === undefined ? undefined : input.description?.trim() || null, instructions: input.instructions === undefined ? undefined : input.instructions?.trim() || null, memoryEnabled: input.memoryEnabled, documentsEnabled: input.documentsEnabled } });
+  } catch (err) {
+    if (isDuplicateName(err)) throw badRequest("Un projet portant ce nom existe déjà.");
+    throw err;
+  }
 }
 
 export async function deleteProject(userId: string, id: string) {

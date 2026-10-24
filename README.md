@@ -175,13 +175,17 @@ Avec LM Studio ou llama.cpp, choisissez le type **Compatible OpenAI** et l'adres
 | `COOKIE_SECURE` | non | `auto` (défaut : `Secure` si HTTPS détecté), `true` ou `false`. |
 | `TRUST_PROXY` | non | `true` derrière un reverse proxy (IP client via `X-Forwarded-For`). `true` par défaut en Compose. |
 | `RATE_LIMIT_GENERATIONS_PER_MINUTE` | non | 20 par défaut, par utilisateur. |
-| `APP_PORT`, `APP_BIND` | non | Port et interface publiés par Docker Compose (`3000`, `0.0.0.0`). |
-| `NODE_VERSION` | non | Image Node du build Docker (`22-alpine` par défaut). |
+| `APP_PORT`, `APP_BIND` | non | Seulement avec la surcouche `compose.ports.yaml` (accès direct sans reverse proxy) : port et interface publiés (`3200`, `127.0.0.1`). |
+| `NODE_VERSION` | non | Image Node du build Docker (`22.23.4-alpine` par défaut, épinglée). |
+| `WITH_FFMPEG`, `WITH_TESSERACT` | non | Build : inclure ffmpeg (vidéos) et tesseract natif (OCR fra+eng) dans l'image (`true`). |
+| `APP_MEMORY_LIMIT`, `APP_CPU_LIMIT`, `DB_MEMORY_LIMIT`, `NODE_OPTIONS` | non | Limites de ressources des conteneurs (`4g`, `4`, `2g`, tas V8 `2048` Mo). |
 | `SEARCH_PROVIDER` | non | `searxng` (défaut) ou `brave`. Valeur initiale, modifiable dans l'administration. |
 | `SEARXNG_URL` | non | Adresse de SearXNG vue depuis le serveur (`http://searxng:8080` en Compose, `http://localhost:8888` avec `compose.dev.yaml`). Utilisée si le champ de l'administration est vide. |
 | `SEARXNG_SECRET` | oui (Docker) | Secret interne du service `searxng` (`openssl rand -hex 32`). |
-| `SEARXNG_IMAGE` | non | Image SearXNG (`searxng/searxng:latest` ; épinglez une version en production). |
+| `SEARXNG_IMAGE` | non | Image de base SearXNG (version épinglée par défaut ; `settings.yml` est intégré à l'image au build). |
 | `BRAVE_SEARCH_API_KEY` | non | Clé Brave Search si `SEARCH_PROVIDER=brave` (jamais envoyée au navigateur). |
+
+Liste complète et commentée pour la production : [`.env.production.example`](.env.production.example), contrôlable par `node scripts/check-env.mjs <fichier>` (n'affiche aucun secret). Les variables `JEV_*` et `DOCUMENT_*` sont décrites dans ce fichier et dans leurs sections ci-dessous.
 
 `AI_PROVIDER`, `AI_BASE_URL` et `AI_API_KEY` ne servent qu'à **initialiser** la configuration lors du premier démarrage. Elle est ensuite stockée en base et se modifie dans l'administration.
 
@@ -205,8 +209,10 @@ Aucun identifiant n'est codé en dur. Après la première connexion, changez le 
 cp .env.example .env
 # Renseignez POSTGRES_PASSWORD, AUTH_SECRET, SUPERADMIN_EMAIL, SUPERADMIN_PASSWORD
 # et AI_BASE_URL=http://host.docker.internal:11434 si Ollama tourne sur la machine hôte
-docker compose up --build -d
-docker compose ps        # app : healthy, migrate : exited (0), db : healthy
+node scripts/check-env.mjs .env
+# compose.yaml ne publie aucun port (production derrière un reverse proxy) ; pour un accès direct :
+docker compose -f compose.yaml -f compose.ports.yaml up --build -d
+docker compose ps        # app : healthy, migrate : exited (0), db : healthy, searxng : healthy
 ```
 
 Services de [`compose.yaml`](compose.yaml) :
@@ -214,11 +220,11 @@ Services de [`compose.yaml`](compose.yaml) :
 | Service | Rôle |
 |---|---|
 | `db` | PostgreSQL 17, volume persistant `iatrano-db`, **aucun port publié** (joignable uniquement par les autres services). |
-| `searxng` | Moteur de recherche SearXNG pour la recherche Web, configuré par `searxng/settings.yml` (format JSON activé), **aucun port publié**. |
+| `searxng` | Moteur de recherche SearXNG pour la recherche Web, image construite avec `searxng/settings.yml` intégré (format JSON activé), **aucun port publié**. |
 | `migrate` | Exécute `prisma migrate deploy` (migrations en attente uniquement, jamais de reset), puis s'arrête. |
 | `app` | Next.js en mode production (`node server.js`, écoute sur `0.0.0.0:3000`), utilisateur non-root, healthcheck sur `/api/health`. Démarre après la réussite de `migrate`. |
 
-L'application est accessible sur `http://<IP-de-la-machine>:${APP_PORT}` (3000 par défaut), y compris depuis un smartphone du même réseau.
+Avec `compose.ports.yaml`, l'application est accessible sur `http://${APP_BIND}:${APP_PORT}` (`127.0.0.1:3200` par défaut ; `APP_BIND=0.0.0.0` pour le réseau local, avec `TRUST_PROXY=false` faute de reverse proxy).
 
 > **Important pour Ollama sur l'hôte Linux :** par défaut, Ollama n'écoute que sur `127.0.0.1`, donc le conteneur ne peut pas le joindre (l'application affiche alors « Connexion refusée par host.docker.internal:11434 » avec la solution). Voir [la section réseau](#ollama-sur-la-machine-hôte-et-application-dans-docker).
 
@@ -226,17 +232,13 @@ L'application est accessible sur `http://<IP-de-la-machine>:${APP_PORT}` (3000 p
 
 ## Déploiement avec Dokploy
 
-1. **Créer le service** : *Project → Create Service → Compose*, source Git (ce dépôt), *Compose Path* : `./compose.yaml`.
-2. **Environment** : collez les variables (au minimum `POSTGRES_PASSWORD`, `AUTH_SECRET`, `SUPERADMIN_EMAIL`, `SUPERADMIN_PASSWORD`, `AI_BASE_URL`, `SEARXNG_SECRET`). Gardez `COOKIE_SECURE=auto` et `TRUST_PROXY=true`.
-3. **Domaine** : *Domains → Add Domain*, service `app`, port `3000`, HTTPS (Let's Encrypt) si le domaine est public, ou HTTP pour un nom local.
-   - Le reverse proxy Traefik de Dokploy suffit. Pour ne pas publier aussi un port sur l'hôte, supprimez le bloc `ports:` du service `app`, ou réglez `APP_PORT` sur un port libre.
-4. **Deploy**. À chaque déploiement, `migrate` applique les migrations en attente puis `app` démarre. Le volume nommé `iatrano-db` est conservé entre les redéploiements et les redémarrages.
-5. **Topologie IA** :
-   - moteur IA sur **le même serveur** que Dokploy : `AI_BASE_URL=http://host.docker.internal:11434`. `extra_hosts: host-gateway` est déjà configuré ; Ollama doit écouter sur `0.0.0.0` (voir ci-dessous) ;
-   - moteur IA sur **une autre machine** : `AI_BASE_URL=http://192.168.x.y:11434`, et le moteur doit accepter les connexions réseau.
-6. **Vérification** : *Administration → État* doit afficher PostgreSQL et le serveur IA en vert.
+La procédure complète (PC de développement → serveur, domaine, HTTPS, mises à jour, rollback, sauvegardes) est dans **[docs/DEPLOIEMENT.md](docs/DEPLOIEMENT.md)**. En résumé :
 
-> Si `docker compose build` échoue sur Dokploy avec une erreur DNS sur `registry-1.docker.io`, c'est le démon Docker de la machine qui n'a pas accès à Internet ou au DNS. Corrigez la configuration réseau du démon, ou pré-téléchargez `node:22-alpine` et `postgres:17-alpine`.
+1. **Créer le service** : *Project → Create Service → Compose*, source Git (ce dépôt, branche `main`), *Compose Path* : `./compose.yaml`.
+2. **Environment** : collez le contenu de [`.env.production.example`](.env.production.example) rempli (secrets générés, `SUPERADMIN_*`, `JEV_API_KEY`…), vérifié au préalable par `node scripts/check-env.mjs`.
+3. **Domaine** : *Domains → Add Domain*, service `app`, port `3000`. Dokploy ajoute lui-même les labels Traefik et le réseau `dokploy-network`. `compose.yaml` ne publie **aucun** port sur l'hôte : le port 3000 de l'hôte est celui de l'interface Dokploy.
+4. **Deploy**. À chaque déploiement, `migrate` applique les migrations en attente puis `app` démarre. Les volumes nommés `iatrano-db` et `iatrano-documents` sont conservés entre les redéploiements.
+5. **Vérification** : *Administration → État* (PostgreSQL et serveur IA en vert), *Recherche Web → Tester*, *Connexion JEV → Tester*.
 
 ---
 
@@ -418,7 +420,7 @@ docker compose -f compose.dev.yaml up -d
 ### Docker et Dokploy
 
 - `docker compose up -d` démarre aussi `searxng` (renseignez `SEARXNG_SECRET`). L'application l'interroge sur `http://searxng:8080` (valeur par défaut de `SEARXNG_URL` en Compose).
-- **Dokploy** : ajoutez `SEARXNG_SECRET` aux variables ; le fichier `searxng/settings.yml` du dépôt est monté en lecture seule. Le conteneur `app` doit pouvoir sortir sur Internet (ports 80/443) pour lire les pages ; le conteneur `searxng` aussi, pour interroger les moteurs.
+- **Dokploy** : ajoutez `SEARXNG_SECRET` aux variables ; le fichier `searxng/settings.yml` du dépôt est intégré à l'image `searxng` au build. Le conteneur `app` doit pouvoir sortir sur Internet (ports 80/443) pour lire les pages ; le conteneur `searxng` aussi, pour interroger les moteurs.
 - Épinglez l'image (`SEARXNG_IMAGE=searxng/searxng:<version>`) pour des déploiements reproductibles.
 
 ### Sécurité de la navigation ([`safe-fetch.ts`](src/lib/search/safe-fetch.ts), [`ip.ts`](src/lib/search/ip.ts))
@@ -750,12 +752,12 @@ pnpm db:studio                          # explorateur de données Prisma
 docker compose run --rm migrate         # appliquer manuellement les migrations en attente
 docker compose logs -f app              # journaux de l'application
 
-# Sauvegarde / restauration
-docker compose exec -T db pg_dump -U iatrano -Fc iatrano > iatrano-$(date +%F).dump
-docker compose exec -T db pg_restore -U iatrano -d iatrano --clean < iatrano-AAAA-MM-JJ.dump
+# Sauvegarde / restauration (base + documents ; voir docs/DEPLOIEMENT.md)
+sh scripts/backup.sh -p iatrano -o /srv/backups/iatrano -k 14
+sh scripts/restore.sh -p iatrano -d /srv/backups/iatrano/AAAA-MM-JJ_HHMMSS --yes
 
 # Mise à jour
-git pull && docker compose up --build -d
+git pull && docker compose -f compose.yaml -f compose.ports.yaml up --build -d   # Dokploy : bouton Deploy
 ```
 
 Le journal technique (Administration → Journal) conserve les erreurs du serveur IA, les échecs de connexion et les modifications de configuration. Il peut être vidé depuis l'interface.
@@ -802,7 +804,7 @@ TEST_DATABASE_URL=… LLM_TEST_URL=http://localhost:11434 LLM_TEST_MODEL=qwen2.5
 | Connexion impossible en HTTP sur le réseau local | `COOKIE_SECURE=true` | Utilisez `auto` (ou `false` en HTTP) |
 | Aucun super-administrateur | Variables absentes ou mot de passe trop court | Définissez-les (≥ 12 caractères) et redémarrez ; voir Administration → Journal ou les logs |
 | `migrate` en erreur | Base injoignable ou mot de passe avec caractères spéciaux | `POSTGRES_PASSWORD` uniquement hexadécimal ; `docker compose logs migrate` |
-| Port 3000 déjà utilisé | Autre service | `APP_PORT=3100` (Docker) ou `PORT=3100 pnpm dev` |
+| Port 3000 déjà utilisé | Autre service (sur le serveur : l'interface Dokploy) | Aucun port publié par `compose.yaml` ; avec `compose.ports.yaml`, `APP_PORT=3200` ; en dev `PORT=3100 pnpm dev` |
 | Build Docker : `lookup registry-1.docker.io … permission denied` | Le démon Docker n'a pas d'accès DNS (constaté avec Docker installé en snap) | Corrigez le DNS du démon, ou utilisez une image Node déjà présente : `NODE_VERSION=lts-alpine docker compose build` |
 | « Recherche Web impossible : Aucune adresse SearXNG n'est configurée » | `SEARXNG_URL` vide et champ d'administration vide | Renseignez l'adresse (Compose : `http://searxng:8080`) puis *Tester* |
 | « SearXNG refuse le format JSON (403) » | `json` absent de `search.formats` | Utilisez `searxng/settings.yml` du dépôt (ou ajoutez `json`) |

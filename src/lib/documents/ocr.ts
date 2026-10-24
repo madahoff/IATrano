@@ -1,7 +1,7 @@
 import "server-only";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { runTool, toolPath } from "./tools";
+import { runTool, ToolError, toolPath } from "./tools";
 import { storageRoot } from "./storage";
 
 // OCR : binaire tesseract s'il est installé (plus rapide), sinon tesseract.js (WebAssembly, sans paquet système).
@@ -48,11 +48,16 @@ function tsvConfidence(tsv: string): number | null {
 
 export async function ocrImage(file: string, langs: string, signal?: AbortSignal): Promise<OcrResult> {
   if (await toolPath("tesseract")) {
-    const [text, tsv] = await Promise.all([
-      runTool("tesseract", [file, "-", "-l", langs, "--psm", "3"], { timeoutMs: 180_000, signal }),
-      runTool("tesseract", [file, "-", "-l", langs, "--psm", "3", "tsv"], { timeoutMs: 180_000, signal }),
-    ]);
-    return { text: text.stdout.toString("utf8").trim(), confidence: tsvConfidence(tsv.stdout.toString("utf8")), engine: "tesseract" };
+    try {
+      const [text, tsv] = await Promise.all([
+        runTool("tesseract", [file, "-", "-l", langs, "--psm", "3"], { timeoutMs: 180_000, signal }),
+        runTool("tesseract", [file, "-", "-l", langs, "--psm", "3", "tsv"], { timeoutMs: 180_000, signal }),
+      ]);
+      return { text: text.stdout.toString("utf8").trim(), confidence: tsvConfidence(tsv.stdout.toString("utf8")), engine: "tesseract" };
+    } catch (err) {
+      // Langue absente du binaire installé : tesseract.js sait télécharger ses données, on lui laisse la main.
+      if (!(err instanceof ToolError && err.code === "failed" && /loading language|traineddata/i.test(err.message))) throw err;
+    }
   }
   let timer: NodeJS.Timeout | undefined;
   // Le démarrage du worker est lui aussi soumis au délai et à l'annulation (il peut ne jamais aboutir).

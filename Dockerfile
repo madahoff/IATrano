@@ -1,7 +1,8 @@
 # Image de production IATrano — Next.js (sortie standalone) + Prisma.
 # Cibles : `runner` (application) et `migrator` (migrations Prisma, exécutées une fois puis arrêtées).
 
-ARG NODE_VERSION=22-alpine
+# Version épinglée (reproductibilité) ; mettez-la à jour volontairement, après test.
+ARG NODE_VERSION=22.23.4-alpine
 
 FROM node:${NODE_VERSION} AS base
 RUN apk add --no-cache openssl libc6-compat
@@ -29,9 +30,14 @@ CMD ["pnpm", "prisma", "migrate", "deploy"]
 # --- Exécution
 FROM node:${NODE_VERSION} AS runner
 # poppler-utils : extraction et rendu des PDF (≈ 10 Mo) ; ffmpeg : vidéos et audio (≈ 70 Mo, désactivable avec
-# --build-arg WITH_FFMPEG=false si aucune vidéo n'est importée). L'OCR (tesseract.js) est inclus dans node_modules.
+# --build-arg WITH_FFMPEG=false si aucune vidéo n'est importée).
+# tesseract-ocr (+ français et anglais, ≈ 30 Mo) : OCR natif, plus rapide que tesseract.js et sans téléchargement des
+# données de langue au premier usage. Avec WITH_TESSERACT=false, l'application se replie sur tesseract.js (node_modules).
 ARG WITH_FFMPEG=true
-RUN apk add --no-cache openssl libc6-compat poppler-utils $([ "$WITH_FFMPEG" = "true" ] && echo ffmpeg) \
+ARG WITH_TESSERACT=true
+RUN apk add --no-cache openssl libc6-compat poppler-utils \
+    $([ "$WITH_FFMPEG" = "true" ] && echo ffmpeg) \
+    $([ "$WITH_TESSERACT" = "true" ] && echo tesseract-ocr tesseract-ocr-data-fra tesseract-ocr-data-eng) \
   && addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs \
   && mkdir -p /app/data/documents && chown -R nextjs:nodejs /app/data
 WORKDIR /app

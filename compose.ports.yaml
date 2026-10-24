@@ -1,0 +1,9 @@
+# Surcouche facultative : publie l'application sur un port de la machine hôte (accès direct, sans reverse proxy).
+#   docker compose -f compose.yaml -f compose.ports.yaml up -d --build
+# Inutile avec Dokploy (Traefik sert le domaine). Sur le serveur Dokploy, le port 3000 est déjà pris par son interface :
+# choisissez un port libre (ex. APP_PORT=3200). Sans reverse proxy, mettez TRUST_PROXY=false : sinon un client pourrait
+# falsifier X-Forwarded-For et contourner la limitation des tentatives de connexion.
+services:
+  app:
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3200}:3000"

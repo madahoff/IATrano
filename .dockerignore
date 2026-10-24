@@ -3,13 +3,22 @@
 node_modules
 coverage
 *.log
+*.tsbuildinfo
 .env
 .env.*
 !.env.example
+!.env.production.example
 Dockerfile*
 compose*.yaml
 docker-compose*.yml
 tests
+docs
+deploy
+scripts
 README.md
 .vscode
 .idea
+# Données locales de développement (documents importés, cache OCR) et copies de travail : jamais dans l'image.
+data
+.claude*
+backups

@@ -35,6 +35,11 @@ const LOCAL_PREVIEW = /^image\/(png|jpeg|webp|gif|bmp)$/;
 /** Envois simultanés : au-delà, les fichiers attendent leur tour (l'analyse OCR est coûteuse côté serveur). */
 const CONCURRENCY = 2;
 
+// Identifiant local d'une pièce jointe (clé de liste). crypto.randomUUID() n'existe qu'en contexte sécurisé
+// (HTTPS ou localhost) : en http sur le réseau local il est absent, d'où ce compteur.
+let seq = 0;
+const localId = () => `att-${Date.now().toString(36)}-${(seq++).toString(36)}`;
+
 export const isActive = (s: AttachmentStatus) => s === "preparing" || s === "uploading" || s === "processing";
 
 export function useAttachments() {
@@ -98,7 +103,7 @@ export function useAttachments() {
   const add = useCallback(
     (list: FileList | File[]) => {
       const added: AttachmentItem[] = [...list].map((file) => {
-        const id = crypto.randomUUID();
+        const id = localId();
         files.current.set(id, file);
         const localUrl = LOCAL_PREVIEW.test(file.type) ? URL.createObjectURL(file) : undefined;
         // Contrôle local immédiat : inutile de transférer 200 Mo pour se faire refuser par le serveur.

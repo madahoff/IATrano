@@ -1,6 +1,7 @@
 import "server-only";
 import type { AppSettings, Conversation, Message, Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { claimChatFiles } from "@/lib/files/chat-files";
 import { badRequest, notFound } from "@/lib/errors";
 import { errorDetails, logEvent } from "@/lib/logger";
 import {
@@ -105,6 +106,9 @@ export async function prepareGeneration(
       if (target) await db.message.deleteMany({ where: { conversationId: conversation.id, createdAt: { gte: target.createdAt } } });
     }
   }
+
+  // Fichiers joints cités par le message : rattachés à la conversation (ils la suivent jusqu'à sa suppression).
+  if (userMessage) await claimChatFiles(userId, conversation.id, userMessage.content);
 
   const history = await db.message.findMany({ where: { conversationId: conversation.id }, orderBy: { createdAt: "asc" } });
   const last = history.at(-1);

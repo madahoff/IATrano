@@ -229,7 +229,8 @@ Choix du nom : §5.
 *Deploy*. Ordre : `db` (healthy) → `migrate` (applique les 11 migrations, s'arrête avec le code 0) → `app`.
 `searxng` démarre en parallèle. Dans *Logs*, `app` doit afficher `Super-administrateur … créé.`
 
-Vérifications 🖥️ (remplacez `P` par l'App Name Dokploy) :
+Vérifications 🖥️ (remplacez `P` par l'App Name Dokploy ; préfixez chaque commande `docker` par `sudo` si votre
+compte n'appartient pas au groupe `docker` — erreur « permission denied … docker.sock ») :
 
 ```bash
 P=iatrano-a1b2c3

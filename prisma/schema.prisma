@@ -146,6 +146,7 @@ model User {
   memoryJobs       MemoryJob[]
   memoryTombstones MemoryTombstone[]
   projects         Project[]
+  chatFiles        ChatFile[]
 }
 
 model Session {
@@ -259,6 +260,7 @@ model Conversation {
   messages  Message[]
   summaries ContextSummary[]
   artifacts Artifact[]
+  chatFiles ChatFile[]
   project   Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([userId, archivedAt, updatedAt(sort: Desc)])
@@ -984,4 +986,34 @@ model DocumentRetrieval {
   createdAt   DateTime @default(now())
 
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+/// Fichier joint dans le chat, conservé pour l'aperçu et l'édition. Seul son texte extrait (`text`) est transmis au
+/// modèle, dans un bloc <attached_document id="…"> du message ; le fichier lui-même reste sur disque (storagePath).
+model ChatFile {
+  id             String       @id @default(cuid())
+  userId         String
+  /// Conversation dans laquelle le fichier a été envoyé. Null tant qu'il n'est pas envoyé (supprimé après 24 h).
+  conversationId String?
+  name           String
+  kind           DocumentKind
+  mimeType       String
+  sizeBytes      Int
+  checksum       String
+  /// Chemin relatif à la racine de stockage des documents (original-v<version>.<ext>).
+  storagePath    String
+  /// Incrémentée à chaque enregistrement d'une modification (contrôle des écritures concurrentes).
+  version        Int          @default(1)
+  pageCount      Int?
+  text           String       @default("")
+  warning        String?
+  sentAt         DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([conversationId])
 }

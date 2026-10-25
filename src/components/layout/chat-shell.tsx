@@ -4,6 +4,7 @@ import { createContext, useContext, useState } from "react";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { usePathname } from "next/navigation";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { FileViewer } from "@/components/files/file-viewer";
 import { Sidebar } from "./sidebar";
 
 type ShellContextValue = { openMobileNav: () => void; desktopCollapsed: boolean; toggleDesktop: () => void };
@@ -46,6 +47,8 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
         </Sheet>
         <main className="flex min-w-0 flex-1 flex-col">{children}</main>
       </div>
+      {/* Aperçu des fichiers joints : un seul panneau, au-dessus de toute l'application. */}
+      <FileViewer />
     </ShellContext.Provider>
   );
 }

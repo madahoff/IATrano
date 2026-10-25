@@ -73,18 +73,19 @@ function colIndex(ref: string) {
   return n - 1;
 }
 
-export function extractXlsx(data: Uint8Array, maxRows = 20_000): { units: ExtractedUnit[]; warnings: string[] } {
+export type XlsxSheet = { name: string; rows: Array<{ number: number; values: string[] }>; truncated: boolean };
+
+/** Valeurs brutes des feuilles (valeurs enregistrées, formules non recalculées), avec le numéro de ligne d'origine. */
+export function readXlsxSheets(data: Uint8Array, maxRows = 20_000): XlsxSheet[] {
   const files = readZip(data, (n) => n === "xl/workbook.xml" || n === "xl/sharedStrings.xml" || n === "xl/_rels/workbook.xml.rels" || /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
   const shared = (utf8(files["xl/sharedStrings.xml"]).match(/<si>[\s\S]*?<\/si>/g) ?? []).map((si) => xmlText((si.match(/<t[^>]*>([\s\S]*?)<\/t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, "")).join("")));
   const wb = utf8(files["xl/workbook.xml"]);
   const rels = utf8(files["xl/_rels/workbook.xml.rels"]);
   const sheets = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)].map((m) => ({ name: xmlText(m[1]), target: new RegExp(`Id="${m[2]}"[^>]*Target="([^"]+)"|Target="([^"]+)"[^>]*Id="${m[2]}"`).exec(rels) }));
-  const units: ExtractedUnit[] = [];
-  const warnings: string[] = [];
-  sheets.forEach((s, i) => {
+  return sheets.map((s, i) => {
     const target = (s.target?.[1] ?? s.target?.[2] ?? `worksheets/sheet${i + 1}.xml`).replace(/^\/?xl\//, "");
     const xml = utf8(files[`xl/${target}`]);
-    const rows: string[][] = [];
+    const rows: XlsxSheet["rows"] = [];
     let truncated = false;
     for (const row of xml.match(/<row[\s\S]*?<\/row>/g) ?? []) {
       if (rows.length >= maxRows) {
@@ -99,11 +100,21 @@ export function extractXlsx(data: Uint8Array, maxRows = 20_000): { units: Extrac
         const inlineStr = /<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>/.exec(c)?.[1];
         let value = type === "s" && v !== undefined ? (shared[Number(v)] ?? "") : type === "inlineStr" ? xmlText(inlineStr ?? "") : v !== undefined ? xmlText(v) : "";
         if (type === "b") value = value === "1" ? "VRAI" : "FAUX";
-        values[ref ? colIndex(ref) : values.length] = cell(value);
+        values[ref ? colIndex(ref) : values.length] = value;
       }
-      if (values.some((v) => v)) rows.push(Array.from(values, (v) => v ?? ""));
+      const number = Number(/<row [^>]*r="(\d+)"/.exec(row)?.[1] ?? rows.length + 1);
+      if (values.some((v) => v)) rows.push({ number, values: Array.from(values, (v) => v ?? "") });
     }
-    if (truncated) warnings.push(`Feuille « ${s.name} » : seules les ${maxRows} premières lignes ont été indexées.`);
+    return { name: s.name, rows, truncated };
+  });
+}
+
+export function extractXlsx(data: Uint8Array, maxRows = 20_000): { units: ExtractedUnit[]; warnings: string[] } {
+  const units: ExtractedUnit[] = [];
+  const warnings: string[] = [];
+  readXlsxSheets(data, maxRows).forEach((s, i) => {
+    const rows = s.rows.map((r) => r.values.map(cell));
+    if (s.truncated) warnings.push(`Feuille « ${s.name} » : seules les ${maxRows} premières lignes ont été indexées.`);
     const width = Math.max(0, ...rows.map((r) => r.length));
     const line = (r: string[]) => `| ${[...r, ...Array(width - r.length).fill("")].join(" | ")} |`;
     const table = rows.length ? [line(rows[0]), `|${" --- |".repeat(width)}`, ...rows.slice(1).map(line)].join("\n") : "";

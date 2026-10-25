@@ -708,6 +708,26 @@ Puis : synthèse hiérarchique (map → reduce), méthodes consolidées sur tout
 - **Chat** : étape de recherche affichée, citations `[Dn]` cliquables (document, page, section, extrait, avertissement si faiblement étayée), liste des sources consultées et des limites. Sélecteur « Documents interrogés » (tous ou une sélection, enregistrée sur la conversation) ; « Interroger ce document » ouvre une conversation limitée à ce document.
 - **Administration → Documents** : capacités réellement disponibles (outils, moteur OCR, modèles vision), modèle d'embeddings, OCR, vision, transcription, analyse, tailles, limites, test des services.
 
+### Fichiers joints dans le chat : aperçu et édition
+
+Les fichiers joints à un message (trombone) sont **conservés** (`ChatFile`, `<stockage>/chat/<utilisateur>/<fichier>/`) : une vignette apparaît dès la fin de l'envoi (miniature réelle pour les images, la première page des PDF et les vidéos), et un clic ouvre le fichier dans un **panneau flottant** au-dessus de toute l'application ([`src/components/files`](src/components/files)), sans quitter la conversation ni perdre le texte en cours.
+
+| Format | Aperçu | Édition |
+|---|---|---|
+| PDF | pages rendues par le serveur (poppler), navigation, zoom, téléchargement | — |
+| Images | haute résolution, zoom, ajustement | — |
+| Word (.docx) | rendu fidèle dans le navigateur ([docx-preview](https://github.com/VolodymyrBaydalka/docxjs)) | **texte des paragraphes**, enregistré dans le .docx lui-même ([`docx-text.ts`](src/lib/files/docx-text.ts)) |
+| Texte, Markdown, JSON | éditeur ; aperçu Markdown | oui (JSON validé) |
+| CSV | tableau | oui (cellules, lignes, colonnes ; séparateur conservé) |
+| Excel (.xlsx) | feuilles et valeurs enregistrées | — |
+| PowerPoint (.pptx) | texte des diapositives | — |
+| Audio, vidéo | lecteur du navigateur (format non lisible signalé) | — |
+
+- **Édition Word** : seul `word/document.xml` est réécrit, et seulement les paragraphes modifiés ; styles, tableaux, images, en-têtes et autres entrées de l'archive restent identiques octet pour octet. Un paragraphe modifié prend la mise en forme de son début ; les paragraphes contenant liens, champs, révisions, commentaires, images ou zones de texte sont en lecture seule. Ajouter des paragraphes ou changer la mise en forme demande un traitement de texte : une intégration ONLYOFFICE Docs serait possible, mais imposerait un service supplémentaire (plusieurs Go de RAM, domaine propre accessible par le navigateur, secret JWT partagé) ; elle n'est pas incluse.
+- **Versions** : chaque enregistrement crée une version (verrou optimiste : une écriture concurrente reçoit 409) ; la précédente est gardée en secours. Le texte transmis au modèle est mis à jour si le fichier n'est pas encore envoyé ; un message déjà envoyé garde le texte d'origine.
+- **Sécurité** : toutes les routes `/api/chat/files/<id>/…` vérifient le propriétaire (404 sinon, sans révéler l'existence du fichier) ; textes servis en `text/plain` + `nosniff`, liens des documents Word neutralisés (seuls http(s) et mailto, ouverts à part), HTML et SVG refusés.
+- **Cycle de vie** : un fichier retiré avant l'envoi est supprimé aussitôt, un fichier jamais envoyé après 24 h ; un fichier envoyé suit sa conversation (supprimé avec elle). Le dossier est dans le volume `iatrano-documents` : il est inclus dans `scripts/backup.sh`.
+
 ### Installation des composants
 
 | Composant | Rôle | Installation |

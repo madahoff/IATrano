@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AttachmentChip } from "./composer/attachment-item";
 import { isActive, useAttachments, type AttachmentItem } from "./composer/use-attachments";
+import { openFileViewer } from "@/components/files/viewer-store";
+import { attachmentBlock } from "@/lib/files/attachment-tag";
+import { CHAT_FILE_ACCEPT } from "@/lib/files/types";
 
 export type ComposerHandle = { focus: () => void; setValue: (v: string) => void };
 
@@ -72,9 +75,8 @@ export const Composer = forwardRef<
   function submit() {
     if (!canSend) return;
     // Seuls les fichiers entièrement analysés partent au modèle ; les envois annulés ou en échec sont écartés.
-    const files = ready
-      .map(({ result: a }) => `<attached_document name="${a!.name.replace(/[<>"']/g, "")}" kind="${a!.kind}">\n${a!.text}\n</attached_document>${a!.warning ? `\n[Limitation : ${a!.warning}]` : ""}`)
-      .join("\n\n");
+    // L'identifiant du bloc relie le message au fichier conservé (aperçu depuis la conversation).
+    const files = ready.map(({ result }) => attachmentBlock(result!)).join("\n\n");
     onSubmit([value.trim(), files].filter(Boolean).join("\n\n"));
     setValue("");
     attachments.clear();
@@ -113,9 +115,20 @@ export const Composer = forwardRef<
           className="block max-h-[240px] min-h-11 w-full resize-none bg-transparent px-3 py-2.5 text-base leading-6 outline-none placeholder:text-muted-foreground md:text-[0.95rem]"
         />
         {attachments.items.length > 0 && (
-          <ul aria-label="Fichiers joints" className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto px-1 pb-1">
+          // Liste horizontale compacte, défilable : la zone de saisie garde sa hauteur quel que soit le nombre de fichiers.
+          <ul aria-label="Fichiers joints" className="flex gap-1.5 overflow-x-auto overscroll-x-contain px-1 pt-0.5 pb-1.5 [scrollbar-width:thin]">
             {attachments.items.map((it) => (
-              <AttachmentChip key={it.id} item={it} onCancel={() => attachments.cancel(it.id)} onRetry={() => attachments.retry(it.id)} onRemove={() => attachments.remove(it.id)} />
+              <AttachmentChip
+                key={it.id}
+                item={it}
+                onCancel={() => attachments.cancel(it.id)}
+                onRetry={() => attachments.retry(it.id)}
+                onRemove={() => attachments.remove(it.id)}
+                onOpen={() => {
+                  const files = ready.map((r) => ({ id: r.result!.id, name: r.result!.name, kind: r.result!.kind }));
+                  openFileViewer(files, Math.max(0, files.findIndex((f) => f.id === it.result?.id)));
+                }}
+              />
             ))}
           </ul>
         )}
@@ -144,8 +157,8 @@ export const Composer = forwardRef<
           </div>
         )}
         <div className="flex flex-wrap items-center gap-1 pt-1">
-          <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*" className="hidden" onChange={(e) => addFiles(e.target.files)} />
-          <Button type="button" variant="ghost" size="icon" disabled={isStreaming || busy} onClick={() => fileRef.current?.click()} aria-label="Joindre un document" title="Joindre un document (PDF, DOCX, image)">
+          <input ref={fileRef} type="file" multiple accept={CHAT_FILE_ACCEPT} className="hidden" onChange={(e) => addFiles(e.target.files)} />
+          <Button type="button" variant="ghost" size="icon" disabled={isStreaming || busy} onClick={() => fileRef.current?.click()} aria-label="Joindre un fichier" title="Joindre un fichier (PDF, Word, Excel, PowerPoint, CSV, texte, image, audio, vidéo)">
             <Paperclip />
           </Button>
           {options && (

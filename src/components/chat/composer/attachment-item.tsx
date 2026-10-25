@@ -1,7 +1,8 @@
 "use client";
 
-import { AlertCircle, Check, FileText, Image as ImageIcon, LoaderCircle, RotateCcw, X } from "lucide-react";
+import { AlertCircle, FileText, Image as ImageIcon, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { FileCard } from "@/components/files/file-card";
 import { cn } from "@/lib/utils";
 import { isActive, MAX_ATTACHMENT_BYTES, type AttachmentItem } from "./use-attachments";
 
@@ -31,7 +32,7 @@ export function statusLabel(it: AttachmentItem) {
   }
 }
 
-export function AttachmentChip({ item, onCancel, onRetry, onRemove }: { item: AttachmentItem; onCancel: () => void; onRetry: () => void; onRemove: () => void }) {
+export function AttachmentChip({ item, onCancel, onRetry, onRemove, onOpen }: { item: AttachmentItem; onCancel: () => void; onRetry: () => void; onRemove: () => void; onOpen: () => void }) {
   const { file, status } = item;
   const active = isActive(status);
   const failed = status === "error" || status === "canceled";
@@ -39,21 +40,29 @@ export function AttachmentChip({ item, onCancel, onRetry, onRemove }: { item: At
   const size = status === "uploading" && item.loaded > 0 ? `${formatBytes(item.loaded)} / ${formatBytes(file.size)}` : formatBytes(file.size);
   const label = statusLabel(item);
 
-  if (status === "ready") {
+  if (status === "ready" && item.result) {
+    const r = item.result;
+    // Envoi terminé : carte de fichier avec miniature, ouverte dans le panneau d'aperçu au clic.
     return (
-      <li className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-background py-1 pr-1 pl-2.5 text-xs" title={item.result?.warning ?? undefined}>
-        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="max-w-48 truncate">{file.name}</span>
-        {item.result?.warning ? <AlertCircle className="size-3.5 shrink-0 text-warning-foreground" aria-label={item.result.warning} /> : <Check className="size-3.5 shrink-0 text-success" aria-hidden />}
-        <Button type="button" variant="ghost" size="icon-xs" className="size-7 sm:size-6" onClick={onRemove} aria-label={`Retirer ${file.name}`}>
-          <X />
-        </Button>
+      <li className="shrink-0">
+        <FileCard
+          id={r.id}
+          name={r.name}
+          kind={r.kind}
+          version={r.version}
+          sizeBytes={r.sizeBytes}
+          localUrl={item.localUrl}
+          serverThumbnail={r.hasThumbnail}
+          warning={r.warning}
+          onOpen={onOpen}
+          onRemove={onRemove}
+        />
       </li>
     );
   }
 
   return (
-    <li className={cn("flex w-full min-w-0 flex-col gap-1 rounded-2xl bg-background px-2.5 py-1.5 text-xs sm:w-80", failed && "bg-background/60")}>
+    <li className={cn("flex w-64 min-w-0 shrink-0 flex-col gap-1 rounded-xl bg-background px-2.5 py-1.5 text-xs ring-1 ring-border/60", failed && "bg-background/60")}>
       <div className="flex min-w-0 items-center gap-2">
         {active ? (
           <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden />
@@ -76,7 +85,7 @@ export function AttachmentChip({ item, onCancel, onRetry, onRemove }: { item: At
           </Button>
         ) : (
           <>
-            {file.size <= MAX_ATTACHMENT_BYTES && (
+            {file.size <= MAX_ATTACHMENT_BYTES && item.retryable !== false && (
               <Button type="button" variant="ghost" size="icon-xs" className="size-7 sm:size-6" onClick={onRetry} aria-label={`Réessayer l’envoi de ${file.name}`} title="Réessayer">
                 <RotateCcw />
               </Button>

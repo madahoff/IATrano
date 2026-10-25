@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/client/api";
 import { isAbortError, uploadFile } from "@/lib/client/upload";
+import { CHAT_FILE_MAX_BYTES, type ChatFileUpload } from "@/lib/files/types";
+import { onFileSaved } from "@/components/files/viewer-store";
 
 // Pièces jointes du chat : chaque fichier a son propre envoi (progression, annulation, nouvelle tentative).
-// Seuls les fichiers à l'état « ready » sont transmis au modèle.
+// Le serveur conserve le fichier (aperçu, édition) ; seuls les fichiers à l'état « ready » sont transmis au modèle.
 
-export type AttachmentResult = { name: string; kind: string; text: string; warning: string | null };
+export type AttachmentResult = ChatFileUpload;
 
 export type AttachmentStatus = "preparing" | "uploading" | "processing" | "ready" | "error" | "canceled";
 
@@ -20,10 +22,16 @@ export type AttachmentItem = {
   /** Pourcentage réel de transfert, null tant que le navigateur ne l'a pas mesuré. */
   percent: number | null;
   error?: string;
+  /** false : refus définitif (format, fichier corrompu, trop volumineux) — réessayer ne changerait rien. */
+  retryable?: boolean;
   result?: AttachmentResult;
+  /** Aperçu local immédiat des images (URL d'objet du navigateur, libérée au retrait). */
+  localUrl?: string;
 };
 
-export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = CHAT_FILE_MAX_BYTES;
+/** Images que le navigateur affiche lui-même : miniature locale sans attendre le serveur. */
+const LOCAL_PREVIEW = /^image\/(png|jpeg|webp|gif|bmp)$/;
 /** Envois simultanés : au-delà, les fichiers attendent leur tour (l'analyse OCR est coûteuse côté serveur). */
 const CONCURRENCY = 2;
 
@@ -31,6 +39,11 @@ export const isActive = (s: AttachmentStatus) => s === "preparing" || s === "upl
 
 export function useAttachments() {
   const [items, setItems] = useState<AttachmentItem[]>([]);
+  // Dernière liste rendue, lue par les actions qui ont des effets de bord (les fonctions de mise à jour restent pures).
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
   const controllers = useRef(new Map<string, AbortController>());
   const queue = useRef<string[]>([]);
   const files = useRef(new Map<string, File>());
@@ -63,7 +76,9 @@ export function useAttachments() {
         })
         .catch((err: unknown) => {
           if (isAbortError(err) || controller.signal.aborted) return; // état déjà mis à jour par cancel()
-          patch(id, { status: "error", error: err instanceof ApiError ? err.message : "Le fichier n’a pas pu être lu." });
+          // 400 : le serveur a refusé ce fichier (format, contenu illisible) ; le reste est passager (réseau, serveur).
+          const definitive = err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+          patch(id, { status: "error", error: err instanceof ApiError ? err.message : "Le fichier n’a pas pu être lu.", retryable: !definitive });
         })
         .finally(() => {
           if (controllers.current.get(id) === controller) controllers.current.delete(id);
@@ -85,10 +100,11 @@ export function useAttachments() {
       const added: AttachmentItem[] = [...list].map((file) => {
         const id = crypto.randomUUID();
         files.current.set(id, file);
+        const localUrl = LOCAL_PREVIEW.test(file.type) ? URL.createObjectURL(file) : undefined;
         // Contrôle local immédiat : inutile de transférer 200 Mo pour se faire refuser par le serveur.
         if (file.size > MAX_ATTACHMENT_BYTES)
-          return { id, file, status: "error", loaded: 0, percent: null, error: `Fichier trop volumineux (maximum ${MAX_ATTACHMENT_BYTES / 1024 / 1024} Mo).` };
-        return { id, file, status: "preparing", loaded: 0, percent: null };
+          return { id, file, status: "error", loaded: 0, percent: null, localUrl, error: `Fichier trop volumineux (maximum ${MAX_ATTACHMENT_BYTES / 1024 / 1024} Mo).` };
+        return { id, file, status: "preparing", loaded: 0, percent: null, localUrl };
       });
       setItems((current) => [...current, ...added]);
       for (const it of added) if (it.status === "preparing") enqueue(it.id);
@@ -111,7 +127,7 @@ export function useAttachments() {
     (id: string) => {
       const file = files.current.get(id);
       if (!file || file.size > MAX_ATTACHMENT_BYTES) return;
-      patch(id, { status: "preparing", percent: null, loaded: 0, error: undefined, result: undefined });
+      patch(id, { status: "preparing", percent: null, loaded: 0, error: undefined, retryable: undefined, result: undefined });
       enqueue(id);
     },
     [enqueue, patch],
@@ -123,20 +139,37 @@ export function useAttachments() {
       controllers.current.get(id)?.abort();
       controllers.current.delete(id);
       files.current.delete(id);
-      setItems((list) => list.filter((it) => it.id !== id));
+      const it = itemsRef.current.find((i) => i.id === id);
+      if (it?.localUrl) URL.revokeObjectURL(it.localUrl);
+      // Fichier déjà conservé par le serveur mais jamais envoyé : supprimé tout de suite (sinon après 24 h).
+      if (it?.result) void fetch(`/api/chat/files/${it.result.id}`, { method: "DELETE" }).catch(() => {});
+      setItems((list) => list.filter((i) => i.id !== id));
       pump();
     },
     [pump],
   );
 
-  /** Vide la liste (après envoi du message) : interrompt ce qui serait encore en cours. */
+  /** Vide la liste (après envoi du message : les fichiers suivent désormais la conversation) : interrompt ce qui serait encore en cours. */
   const clear = useCallback(() => {
     queue.current = [];
     for (const c of controllers.current.values()) c.abort();
     controllers.current.clear();
     files.current.clear();
+    for (const it of itemsRef.current) if (it.localUrl) URL.revokeObjectURL(it.localUrl);
     setItems([]);
   }, []);
+
+  // Fichier modifié dans le panneau d'aperçu : le texte transmis au modèle et la miniature suivent la nouvelle version.
+  useEffect(
+    () =>
+      onFileSaved((saved) => {
+        const target = itemsRef.current.find((it) => it.result?.id === saved.id);
+        if (!target) return;
+        if (target.localUrl) URL.revokeObjectURL(target.localUrl);
+        setItems((list) => list.map((it) => (it.id === target.id ? { ...it, result: saved, localUrl: undefined } : it)));
+      }),
+    [],
+  );
 
   // Démontage (changement de conversation, navigation) : aucune requête ne doit survivre.
   useEffect(() => {

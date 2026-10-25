@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Ban, Info, Pencil, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -15,6 +15,10 @@ import { DocSourcesSummary, DocumentsProgress } from "./documents/doc-sources";
 import { RoutingTags } from "./routing/routing-tags";
 import { ArtifactBuilding, ArtifactCard } from "./artifacts/artifact-card";
 import type { UIMessage } from "./use-chat";
+import { FileCard } from "@/components/files/file-card";
+import { openFileViewer } from "@/components/files/viewer-store";
+import { joinAttachments, splitAttachments } from "@/lib/files/attachment-tag";
+import type { FileKind } from "@/lib/files/types";
 
 export const UserMessage = memo(function UserMessage({
   message,
@@ -26,8 +30,17 @@ export const UserMessage = memo(function UserMessage({
   onEdit: (id: string, content: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(message.content);
+  // Texte saisi et fichiers joints : la bulle n'affiche que le texte, les fichiers deviennent des cartes ouvrables.
+  const parts = useMemo(() => splitAttachments(message.content), [message.content]);
+  const [draft, setDraft] = useState(parts.text);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // Modifier un message conserve ses fichiers joints (seul le texte saisi est modifiable).
+  const submitEdit = () => {
+    setEditing(false);
+    onEdit(message.id, joinAttachments(draft, parts.blocks));
+  };
+  const canSubmit = Boolean(draft.trim() || parts.blocks.length);
+  const viewable = parts.attachments.flatMap((a) => (a.id ? [{ id: a.id, name: a.name, kind: a.kind as FileKind }] : []));
 
   useEffect(() => {
     if (!editing || !ref.current) return;
@@ -49,39 +62,56 @@ export const UserMessage = memo(function UserMessage({
           }}
           onKeyDown={(e) => {
             if (e.key === "Escape") setEditing(false);
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && draft.trim()) {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && canSubmit) {
               e.preventDefault();
-              setEditing(false);
-              onEdit(message.id, draft.trim());
+              submitEdit();
             }
           }}
           aria-label="Modifier le message"
           className="max-h-80 min-h-12 w-full resize-none bg-transparent px-2 py-1 text-[0.95rem] leading-7 outline-none"
         />
         <div className="mt-2 flex justify-end gap-2">
-          <Button size="sm" variant="ghost" onClick={() => { setDraft(message.content); setEditing(false); }}>
+          <Button size="sm" variant="ghost" onClick={() => { setDraft(parts.text); setEditing(false); }}>
             Annuler
           </Button>
-          <Button size="sm" disabled={!draft.trim()} onClick={() => { setEditing(false); onEdit(message.id, draft.trim()); }}>
+          <Button size="sm" disabled={!canSubmit} onClick={submitEdit}>
             Envoyer
           </Button>
         </div>
-        <p className="mt-2 px-2 text-xs text-muted-foreground">Les réponses suivantes seront remplacées par une nouvelle génération.</p>
+        <p className="mt-2 px-2 text-xs text-muted-foreground">
+          Les réponses suivantes seront remplacées par une nouvelle génération.
+          {parts.attachments.length > 0 && ` Les ${parts.attachments.length > 1 ? `${parts.attachments.length} fichiers joints sont conservés` : "fichier joint est conservé"}.`}
+        </p>
       </div>
     );
   }
 
   return (
     <div className="group/msg flex flex-col items-end">
-      <div className="max-w-[85%] rounded-3xl bg-bubble px-4 py-2.5 text-[0.95rem] leading-7 break-words whitespace-pre-wrap">
-        {message.content}
-      </div>
+      {parts.attachments.length > 0 && (
+        <ul aria-label="Fichiers joints" className="mb-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5">
+          {parts.attachments.map((a, i) => (
+            <li key={`${a.id ?? a.name}-${i}`}>
+              <FileCard
+                id={a.id}
+                name={a.name}
+                kind={a.kind as FileKind}
+                onOpen={a.id ? () => openFileViewer(viewable, viewable.findIndex((v) => v.id === a.id)) : undefined}
+                unavailableReason={a.id ? undefined : "Fichier joint avant la conservation des fichiers : seul son texte a été transmis."}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      {(parts.text || !parts.attachments.length) && (
+        <div className="max-w-[85%] rounded-3xl bg-bubble px-4 py-2.5 text-[0.95rem] leading-7 break-words whitespace-pre-wrap">{parts.text}</div>
+      )}
       <div className="mt-1 flex gap-0.5 opacity-100 transition-opacity md:opacity-0 md:group-hover/msg:opacity-100 md:focus-within:opacity-100">
-        <CopyButton text={message.content} label="Copier le message" />
+        <CopyButton text={parts.text || message.content} label="Copier le message" />
         {canEdit && !message.id.startsWith("temp-") && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Modifier le message" onClick={() => { setDraft(message.content); setEditing(true); }}>
+              <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Modifier le message" onClick={() => { setDraft(parts.text); setEditing(true); }}>
                 <Pencil />
               </Button>
             </TooltipTrigger>

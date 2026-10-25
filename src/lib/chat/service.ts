@@ -1,6 +1,7 @@
 import "server-only";
 import type { Artifact, Conversation, DocumentRetrieval, Message, Prisma, WebSearch } from "@prisma/client";
 import { db } from "@/lib/db";
+import { conversationFileDirs, removeFileDirs } from "@/lib/files/chat-files";
 import { getOwnedProject } from "@/lib/projects/service";
 import { notFound } from "@/lib/errors";
 import { clarificationSchema } from "@/lib/llm/clarify";
@@ -174,6 +175,9 @@ export async function ownedDocumentIds(projectId: string | null | undefined, ids
 
 export async function deleteConversation(userId: string, id: string) {
   // deleteMany avec userId : aucune suppression possible hors de son propre espace. Les messages suivent (cascade).
+  // Dossiers des fichiers joints relevés avant la suppression (les lignes ChatFile suivent par cascade).
+  const fileDirs = await conversationFileDirs(userId, id);
   const res = await db.conversation.deleteMany({ where: { id, userId } });
   if (res.count === 0) throw notFound("Conversation introuvable.");
+  await removeFileDirs(fileDirs);
 }

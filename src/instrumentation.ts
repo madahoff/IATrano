@@ -14,5 +14,8 @@ export async function register() {
     // File de traitement des documents (reprend aussi les traitements interrompus par un redémarrage).
     const { startDocumentWorker } = await import("@/lib/documents/worker");
     startDocumentWorker();
+    // Ménage des fichiers joints du chat (jamais envoyés depuis 24 h, conversations supprimées).
+    const { startChatFileSweeper } = await import("@/lib/files/chat-files");
+    startChatFileSweeper();
   }
 }
